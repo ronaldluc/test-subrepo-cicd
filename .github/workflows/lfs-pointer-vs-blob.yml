@@ -1,0 +1,30 @@
+name: lfs-pointer-vs-blob
+
+on:
+  workflow_dispatch:
+
+jobs:
+  without-lfs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: clip.mp4 (no lfs:true)
+        run: |
+          if [ -f prod/mock-app/clip.mp4 ]; then
+            echo "size:"; wc -c prod/mock-app/clip.mp4
+            echo "file:"; file prod/mock-app/clip.mp4
+            echo "first-bytes:"; head -c 200 prod/mock-app/clip.mp4
+          fi
+
+  with-lfs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: clip.mp4 (lfs:true)
+        run: |
+          if [ -f prod/mock-app/clip.mp4 ]; then
+            echo "size:"; wc -c prod/mock-app/clip.mp4
+            echo "file:"; file prod/mock-app/clip.mp4
+          fi
