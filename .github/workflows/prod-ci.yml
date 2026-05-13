@@ -1,0 +1,45 @@
+name: prod-ci
+
+on:
+  pull_request:
+    paths:
+      - "prod/**"
+  push:
+    branches: [main]
+    paths:
+      - "prod/**"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: List prod paths touched
+        run: |
+          echo "prod-ci caught the path filter"
+          ls -la prod/
+      - name: Show clip.mp4 size (LFS smudge check)
+        run: |
+          if [ -f prod/mock-app/clip.mp4 ]; then
+            wc -c prod/mock-app/clip.mp4
+            file prod/mock-app/clip.mp4 || true
+          else
+            echo "no clip.mp4 yet"
+          fi
+
+  ci-gate:
+    needs: [lint]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Aggregate
+        run: |
+          if [ "${{ needs.lint.result }}" = "success" ] || [ "${{ needs.lint.result }}" = "skipped" ]; then
+            echo "prod-ci gate green (success or skipped-as-success)"
+            exit 0
+          else
+            echo "prod-ci gate red: lint=${{ needs.lint.result }}"
+            exit 1
+          fi

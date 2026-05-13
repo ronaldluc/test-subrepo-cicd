@@ -1,0 +1,19 @@
+name: spikes-smoke
+
+on:
+  pull_request:
+    paths:
+      - "spikes/**"
+      - "docs/**"
+  push:
+    branches: [main]
+    paths:
+      - "spikes/**"
+      - "docs/**"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "spikes-smoke advisory only"

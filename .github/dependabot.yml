@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/prod/mock-app"
+    schedule:
+      interval: "daily"
+  - package-ecosystem: "npm"
+    directory: "/ops/mock-script"
+    schedule:
+      interval: "daily"

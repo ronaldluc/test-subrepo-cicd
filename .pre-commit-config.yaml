@@ -1,0 +1,32 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: detect-private-key
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.7
+    hooks:
+      - id: ruff
+        files: ^prod/
+      - id: ruff-format
+        files: ^prod/
+
+  - repo: local
+    hooks:
+      - id: agents-md-symlink
+        name: Every CLAUDE.md must have a sibling AGENTS.md symlink
+        entry: scripts/check-agents-symlinks.sh
+        language: script
+        pass_filenames: false
+        always_run: true

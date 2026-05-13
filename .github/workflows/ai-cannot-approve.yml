@@ -1,0 +1,27 @@
+name: ai-cannot-approve
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  guard:
+    if: github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect reviewer type
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEWER_LOGIN: ${{ github.event.review.user.login }}
+        run: |
+          echo "Reviewer login: $REVIEWER_LOGIN"
+          TYPE=$(gh api users/"$REVIEWER_LOGIN" --jq .type)
+          echo "Reviewer type: $TYPE"
+          if [ "$TYPE" = "Bot" ]; then
+            echo "::error::Bot account $REVIEWER_LOGIN cannot satisfy CODEOWNER review."
+            exit 1
+          fi
+          echo "Reviewer is a real user; OK."
