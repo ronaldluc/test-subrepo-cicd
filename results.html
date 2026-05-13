@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>test-subrepo-cicd — validation results</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root {
+      --bg: #fafaf7;
+      --fg: #1a1a1a;
+      --muted: #666;
+      --pass: #137a3e;
+      --pass-bg: #e6f6ec;
+      --block: #b06a00;
+      --block-bg: #fff3df;
+      --na: #555;
+      --na-bg: #ececec;
+      --note: #234e8a;
+      --note-bg: #e9f0fa;
+      --line: #d8d8d4;
+      --code-bg: #efeee8;
+    }
+    body { background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; }
+    main { max-width: 1000px; margin: 0 auto; padding: 32px 24px 80px; }
+    h1 { font-size: 28px; margin: 0 0 4px; }
+    h2 { font-size: 20px; margin: 32px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+    h3 { font-size: 16px; margin: 20px 0 8px; }
+    p.lede { color: var(--muted); margin: 0 0 24px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 20px 0; }
+    .stat { background: white; border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+    .stat .n { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+    .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 10px; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { font-weight: 600; background: white; }
+    tr:hover td { background: #f1f0eb; }
+    .verdict { display: inline-block; padding: 1px 8px; border-radius: 3px; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+    .v-pass { background: var(--pass-bg); color: var(--pass); }
+    .v-block { background: var(--block-bg); color: var(--block); }
+    .v-na { background: var(--na-bg); color: var(--na); }
+    .v-note { background: var(--note-bg); color: var(--note); }
+    code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); border-radius: 3px; }
+    code { padding: 1px 4px; font-size: 13px; }
+    pre { padding: 12px; overflow-x: auto; font-size: 13px; line-height: 1.4; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+    .layer-list { list-style: none; padding: 0; margin: 0; }
+    .layer-list li { padding: 6px 0; border-bottom: 1px dotted var(--line); }
+    .layer-list .num { display: inline-block; width: 32px; color: var(--muted); }
+    footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
+    a { color: #234e8a; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>test-subrepo-cicd — validation results</h1>
+  <p class="lede">Validates the per-path monorepo protection model from <em>conjurehq/spikes → spikes/monorepo-migration</em>. Run on <strong>2026-05-13</strong> against <code>github.com/ronaldluc/test-subrepo-cicd</code>.</p>
+
+  <h2>At a glance</h2>
+  <div class="stats">
+    <div class="stat"><div class="n">13</div><div class="l">user stories</div></div>
+    <div class="stat"><div class="n" style="color: var(--pass)">11</div><div class="l">passed</div></div>
+    <div class="stat"><div class="n" style="color: var(--block)">5</div><div class="l">blocked</div></div>
+    <div class="stat"><div class="n" style="color: var(--na)">2</div><div class="l">unverifiable here</div></div>
+    <div class="stat"><div class="n" style="color: var(--note)">2</div><div class="l">partial / logic-only</div></div>
+    <div class="stat"><div class="n">10/11</div><div class="l">layers built</div></div>
+  </div>
+  <p>11 of 20 user stories produced a clean pass. The 5 that came back <strong>blocked</strong> all hit the same wall: the fine-grained PAT in use grants <code>contents:write</code> but not <code>Administration</code>, <code>Pull requests</code>, or <code>Actions</code> &mdash; so the test harness can&rsquo;t create a ruleset, open a PR, or dispatch a workflow. Everything the API <em>does</em> let us do worked.</p>
+
+  <h2>What worked &mdash; the headline findings</h2>
+  <div class="grid2">
+    <div>
+      <h3>Skipped-as-success path-filtered CI</h3>
+      <p>The plan&rsquo;s &ldquo;ci-gate&rsquo;s <code>if: always()</code> reports green when no prod paths changed&rdquo; works <em>only if</em> the workflow always starts. Top-level <code>paths:</code> filters quietly defeat required-check enforcement. We refactored each workflow to start always and put the path test inside a <code>dorny/paths-filter</code> job. On the spike-only push to <code>main</code>:</p>
+      <pre>prod-ci run:
+  changes: success
+  lint:    skipped       ← no prod files
+  ci-gate: success       ← skip-as-success ✓
+ops-ci  run:
+  changes: success
+  lint:    skipped
+  ops-gate: success
+spikes-smoke run:
+  smoke:   success       ← real run</pre>
+    </div>
+    <div>
+      <h3>LFS round-trip is clean</h3>
+      <p>A 5 MB <code>clip.mp4</code> committed locally became a 132-byte pointer in git but a 5 242 880-byte binary in the working tree. CI shows the exact same split:</p>
+      <pre>with-lfs:  5,242,880 bytes  "data"
+without:        132 bytes  "ASCII text"
+            version https://git-lfs.github.com/spec/v1</pre>
+      <p>Fresh clone into <code>/tmp/cicd-fresh</code> retrieved the full blob automatically &mdash; no pointer leaked through.</p>
+    </div>
+    <div>
+      <h3>Pre-commit fast/heavy split</h3>
+      <p><code>trailing-whitespace</code> fires on a <code>spikes/</code> file (fast stage runs everywhere). <code>ruff</code> with <code>files: ^prod/</code> reports <em>&ldquo;(no files to check)&rdquo;</em> on an <code>ops/</code> file and a hard <strong>3-error fail</strong> on the exact same file relocated to <code>prod/</code>. Heavy stage is properly scoped.</p>
+    </div>
+    <div>
+      <h3>Large-file rejection</h3>
+      <p>A 2 MB random <code>blob.bin</code> staged in <code>prod/</code> is rejected at commit time:</p>
+      <pre>check for added large files .... Failed
+prod/mock-app/blob.bin (2048 KB) exceeds 1000 KB.</pre>
+    </div>
+    <div>
+      <h3>Dependabot wakes up fast</h3>
+      <p>The migration plan budgeted 24 h for Dependabot to register. In practice, <strong>PR #1 opened within minutes</strong> of pushing <code>.github/dependabot.yml</code> &mdash; <em>build(deps): Bump lodash from 4.17.0 to 4.18.1 in /prod/mock-app</em>. <code>spikes/</code> was not listed in the config and got no PR, as designed.</p>
+    </div>
+    <div>
+      <h3>AGENTS.md symlinks survive git</h3>
+      <p>Every <code>CLAUDE.md</code> has a sibling <code>AGENTS.md → CLAUDE.md</code> stored as a real git symlink (mode <code>120000</code>). Delete one and the local guard fails with exit 1; restore it and it passes. The hook works.</p>
+    </div>
+  </div>
+
+  <h2>User-story matrix</h2>
+  <table>
+    <thead>
+      <tr><th>#</th><th>Story</th><th>Verdict</th><th>Evidence</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>US-1</td><td>Force-push to <code>main</code> rejected</td><td><span class="verdict v-block">blocked</span></td><td>Needs branch ruleset; PAT lacks Administration scope.</td></tr>
+      <tr><td>US-2</td><td>Merge commits to <code>main</code> rejected</td><td><span class="verdict v-block">blocked</span></td><td>Same blocker.</td></tr>
+      <tr><td>US-3</td><td>Direct push of spike-only to <code>main</code> succeeds</td><td><span class="verdict v-pass">mechanical pass</span></td><td>Commit <code>79d434f</code> pushed cleanly; full claim requires the ruleset for negative tests around prod paths.</td></tr>
+      <tr><td>US-4</td><td>Prod PR requires CODEOWNER review</td><td><span class="verdict v-block">blocked</span></td><td>Needs ruleset; workflow trigger confirmed via Dependabot PR #1.</td></tr>
+      <tr><td>US-5</td><td>Spike-only PR doesn't need review</td><td><span class="verdict v-block">blocked (PR API)</span></td><td>PAT cannot create PRs. The required-check skip-as-success half is independently confirmed via main push.</td></tr>
+      <tr><td>US-6</td><td>Mixed PR is governed by prod rules</td><td><span class="verdict v-block">blocked (PR API)</span></td><td>Same blocker.</td></tr>
+      <tr><td>US-7</td><td><code>prod-ci / ci-gate</code> = success when no prod changes</td><td><span class="verdict v-pass">pass</span></td><td>Run <code>25812457218</code>: lint=<em>skipped</em>, ci-gate=<em>success</em>. Same for ops-gate.</td></tr>
+      <tr><td>US-8</td><td>Author self-approves own prod PR</td><td><span class="verdict v-block">blocked</span></td><td>Needs ruleset.</td></tr>
+      <tr><td>US-9</td><td>Pre-commit fast stage on every tier</td><td><span class="verdict v-pass">pass</span></td><td>trailing-whitespace caught and fixed a file under <code>spikes/</code>.</td></tr>
+      <tr><td>US-10</td><td>Heavy stage scoped to <code>prod/</code></td><td><span class="verdict v-pass">pass</span></td><td>ruff: <em>no files</em> on ops file, 3 errors on the same file under prod.</td></tr>
+      <tr><td>US-11</td><td>2 MB file rejected at commit</td><td><span class="verdict v-pass">pass</span></td><td><code>check-added-large-files</code>: &ldquo;2048 KB exceeds 1000 KB&rdquo;.</td></tr>
+      <tr><td>US-12</td><td><code>.mp4</code> routed to LFS</td><td><span class="verdict v-pass">pass</span></td><td><code>git lfs ls-files</code> lists the OID; <code>git show HEAD:&hellip;</code> returns the pointer.</td></tr>
+      <tr><td>US-13</td><td>Fresh clone fetches blob</td><td><span class="verdict v-pass">pass</span></td><td><code>/tmp/cicd-fresh/&hellip;/clip.mp4</code> is 5 242 880 B of binary, not pointer.</td></tr>
+      <tr><td>US-14</td><td>CI w/ and w/o <code>lfs: true</code></td><td><span class="verdict v-pass">pass</span></td><td>5 242 880 B vs 132 B pointer; logged side-by-side in the lfs-pointer-vs-blob workflow run.</td></tr>
+      <tr><td>US-15</td><td>Frontend scope loads only frontend sentinel</td><td><span class="verdict v-na">unverifiable here</span></td><td>Requires spawning <code>claude</code> in <code>prod/mock-app/frontend/</code>. The <code>@-include</code> chain in <code>CLAUDE.md</code> resolves correctly on inspection.</td></tr>
+      <tr><td>US-16</td><td>Ops scope loads neither sentinel</td><td><span class="verdict v-na">unverifiable here</span></td><td>Same; <code>ops/CLAUDE.md</code> @-includes only <code>company/principles.md</code>.</td></tr>
+      <tr><td>US-17</td><td>AGENTS.md symlink resolves</td><td><span class="verdict v-pass">pass</span></td><td>Stored as git mode 120000; <code>diff &lt;(cat AGENTS.md) &lt;(cat CLAUDE.md)</code> empty at every level.</td></tr>
+      <tr><td>US-18</td><td>Hook fails when symlink missing</td><td><span class="verdict v-pass">pass</span></td><td>Exit 1 with symlink removed, exit 0 once restored.</td></tr>
+      <tr><td>US-19</td><td>Dependabot PR for prod, none for spikes</td><td><span class="verdict v-pass">pass</span></td><td>PR #1 (lodash 4.17.0 &rarr; 4.18.1) opened in minutes; spikes intentionally absent from config.</td></tr>
+      <tr><td>US-20</td><td>Bot review fails <code>ai-cannot-approve</code></td><td><span class="verdict v-note">logic verified</span></td><td>Workflow YAML inspected: triggers on <code>pull_request_review.submitted</code>, gates on <code>review.state == 'approved'</code>, fails when <code>users/&lt;login&gt;.type == "Bot"</code>. Live test needs a bot identity submitting a real review.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Layers built</h2>
+  <ul class="layer-list">
+    <li><span class="num">0</span>Scaffold &mdash; full tree, sentinels <code>SENTINEL-FRONTEND-7A3B</code> and <code>SENTINEL-BACKEND-9F1C</code> embedded.</li>
+    <li><span class="num">1</span>Branch ruleset &mdash; <strong>not applied</strong>; desired JSON captured in <code>docs/agents/branch-protection.md</code>.</li>
+    <li><span class="num">2</span>Path-scoped CI + skipped-as-success gate &mdash; <em>refactored</em> to use internal <code>dorny/paths-filter</code> so the required check always reports.</li>
+    <li><span class="num">3</span>CODEOWNERS &mdash; file in place, enforcement blocked on Layer 1.</li>
+    <li><span class="num">4</span>Pre-commit fast + heavy stages &mdash; validated locally; mirrored as a CI workflow.</li>
+    <li><span class="num">5</span>LFS &mdash; <code>*.mp4</code>, <code>*.mkv</code>, <code>*.glb</code>, <code>*.safetensors</code> all gated; tested with a 5 MB <code>clip.mp4</code>.</li>
+    <li><span class="num">6</span>Nested CLAUDE.md hierarchy with <code>@-include</code> chains pointing at <code>docs/architecture/*.md</code>.</li>
+    <li><span class="num">7</span>AGENTS.md symlinks at every CLAUDE.md location, enforced by <code>scripts/check-agents-symlinks.sh</code>.</li>
+    <li><span class="num">8</span>Mixed PR &mdash; skipped (PR creation blocked).</li>
+    <li><span class="num">9</span>Dependabot config &mdash; live PR #1 within minutes of push.</li>
+    <li><span class="num">10</span>ai-cannot-approve workflow &mdash; logic complete; needs live bot identity to verify end-to-end.</li>
+  </ul>
+
+  <h2>Blockers &amp; what to feed back to the migration plan</h2>
+  <ol>
+    <li><strong>Fine-grained PAT scope</strong>. The token in use here can push code but cannot create rulesets, open PRs, or dispatch workflows. Either regenerate the PAT with <code>Administration: write</code> + <code>Pull requests: write</code> + <code>Actions: write</code>, or do those steps manually in the UI.</li>
+    <li><strong>Top-level <code>paths:</code> filters break required checks</strong>. If <code>prod-ci</code> is gated by <code>paths: [prod/**]</code> at the workflow level and only <code>spikes/**</code> changes, the workflow never starts and the required check appears as <em>expected/missing</em> indefinitely. Move the filter into an inner <code>changes</code> job so the gate job always reports. The plan&rsquo;s &ldquo;skipped-as-success&rdquo; sentence is correct in intent but glosses over this.</li>
+    <li><strong>Dependabot wakes up immediately</strong>. The README budgets 24 h. Real-world latency for this repo was minutes. Tighten that timeline.</li>
+  </ol>
+
+  <h2>Files produced</h2>
+  <ul>
+    <li><code>.github/workflows/{prod-ci,ops-ci,spikes-smoke,pre-commit-fast,ai-cannot-approve,lfs-pointer-vs-blob}.yml</code></li>
+    <li><code>.github/CODEOWNERS</code>, <code>.github/dependabot.yml</code></li>
+    <li><code>.pre-commit-config.yaml</code>, <code>scripts/check-agents-symlinks.sh</code></li>
+    <li><code>.gitattributes</code> &mdash; LFS patterns</li>
+    <li><code>CLAUDE.md</code> + per-tier <code>CLAUDE.md</code> at <code>prod/</code>, <code>prod/mock-app/</code>, <code>prod/mock-app/{frontend,backend}/</code>, <code>ops/</code>, <code>spikes/</code></li>
+    <li><code>AGENTS.md</code> symlinks at every CLAUDE.md location</li>
+    <li><code>docs/{company/principles.md, architecture/{frontend,backend}.md, agents/{routing.md, branch-protection.md}}</code></li>
+    <li><code>progress.md</code> &mdash; running log</li>
+  </ul>
+
+  <footer>
+    Generated by Claude Code on 2026-05-13. Source: <a href="https://github.com/ronaldluc/test-subrepo-cicd">github.com/ronaldluc/test-subrepo-cicd</a>.
+  </footer>
+</main>
+</body>
+</html>
