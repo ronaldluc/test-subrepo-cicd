@@ -58,11 +58,11 @@
 
   <h2>At a glance</h2>
   <div class="stats">
-    <div class="stat"><div class="n">13</div><div class="l">user stories</div></div>
+    <div class="stat"><div class="n">20</div><div class="l">user stories</div></div>
     <div class="stat"><div class="n" style="color: var(--pass)">11</div><div class="l">passed</div></div>
-    <div class="stat"><div class="n" style="color: var(--block)">5</div><div class="l">blocked</div></div>
+    <div class="stat"><div class="n" style="color: var(--block)">6</div><div class="l">blocked (PAT scope)</div></div>
     <div class="stat"><div class="n" style="color: var(--na)">2</div><div class="l">unverifiable here</div></div>
-    <div class="stat"><div class="n" style="color: var(--note)">2</div><div class="l">partial / logic-only</div></div>
+    <div class="stat"><div class="n" style="color: var(--note)">1</div><div class="l">logic-only (US-20)</div></div>
     <div class="stat"><div class="n">10/11</div><div class="l">layers built</div></div>
   </div>
   <p>11 of 20 user stories produced a clean pass. The 5 that came back <strong>blocked</strong> all hit the same wall: the fine-grained PAT in use grants <code>contents:write</code> but not <code>Administration</code>, <code>Pull requests</code>, or <code>Actions</code> &mdash; so the test harness can&rsquo;t create a ruleset, open a PR, or dispatch a workflow. Everything the API <em>does</em> let us do worked.</p>
