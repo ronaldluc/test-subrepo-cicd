@@ -2,15 +2,26 @@ name: prod-ci
 
 on:
   pull_request:
-    paths:
-      - "prod/**"
   push:
     branches: [main]
-    paths:
-      - "prod/**"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      prod: ${{ steps.filter.outputs.prod }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            prod:
+              - 'prod/**'
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.prod == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,16 +41,17 @@ jobs:
           fi
 
   ci-gate:
-    needs: [lint]
-    runs-on: ubuntu-latest
+    needs: [changes, lint]
     if: always()
+    runs-on: ubuntu-latest
     steps:
-      - name: Aggregate
+      - name: Aggregate (skipped-as-success)
         run: |
+          echo "changes.prod=${{ needs.changes.outputs.prod }}"
+          echo "lint.result=${{ needs.lint.result }}"
           if [ "${{ needs.lint.result }}" = "success" ] || [ "${{ needs.lint.result }}" = "skipped" ]; then
-            echo "prod-ci gate green (success or skipped-as-success)"
+            echo "prod-ci gate green"
             exit 0
-          else
-            echo "prod-ci gate red: lint=${{ needs.lint.result }}"
-            exit 1
           fi
+          echo "prod-ci gate red"
+          exit 1

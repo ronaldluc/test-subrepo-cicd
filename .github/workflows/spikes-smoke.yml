@@ -2,17 +2,27 @@ name: spikes-smoke
 
 on:
   pull_request:
-    paths:
-      - "spikes/**"
-      - "docs/**"
   push:
     branches: [main]
-    paths:
-      - "spikes/**"
-      - "docs/**"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      spikes_or_docs: ${{ steps.filter.outputs.spikes_or_docs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            spikes_or_docs:
+              - 'spikes/**'
+              - 'docs/**'
+
   smoke:
+    needs: changes
+    if: needs.changes.outputs.spikes_or_docs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
