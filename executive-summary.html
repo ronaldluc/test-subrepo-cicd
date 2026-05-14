@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Executive summary — monorepo protection, LFS economics, CI runner options</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root {
+      --bg: #fafaf7; --fg: #1a1a1a; --muted: #666;
+      --ok: #137a3e; --okbg: #e6f6ec;
+      --warn: #b06a00; --warnbg: #fff3df;
+      --bad: #b8302b; --badbg: #fbe7e6;
+      --note: #234e8a; --notebg: #e9f0fa;
+      --line: #d8d8d4; --code-bg: #efeee8;
+      --card: white;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: var(--fg); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; }
+    main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+    h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+    h2 { font-size: 22px; margin: 40px 0 14px; padding-bottom: 6px; border-bottom: 2px solid var(--line); letter-spacing: -0.01em; }
+    h3 { font-size: 17px; margin: 22px 0 8px; }
+    p.lede { color: var(--muted); margin: 0 0 24px; font-size: 16px; }
+    code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); border-radius: 3px; }
+    code { padding: 1px 5px; font-size: 13px; }
+    pre { padding: 12px; overflow-x: auto; font-size: 13px; line-height: 1.4; }
+    a { color: var(--note); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0 14px; background: var(--card); }
+    th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-weight: 600; background: #f4f3ee; }
+    tr:hover td { background: #f6f5f0; }
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 3px; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+    .ok { background: var(--okbg); color: var(--ok); }
+    .warn { background: var(--warnbg); color: var(--warn); }
+    .bad { background: var(--badbg); color: var(--bad); }
+    .note { background: var(--notebg); color: var(--note); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin: 16px 0; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; }
+    .card h3 { margin-top: 4px; }
+    .card.rec { border-left: 4px solid var(--ok); }
+    .card.warn { border-left: 4px solid var(--warn); }
+    .card.bad { border-left: 4px solid var(--bad); }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 16px 0 22px; }
+    .stat { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; }
+    .stat .n { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+    .stat .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+    blockquote { border-left: 3px solid var(--line); margin: 12px 0; padding: 4px 14px; color: var(--muted); }
+    footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 18px; }
+    .nav { font-size: 13px; color: var(--muted); margin: 8px 0 28px; }
+    .nav a { margin-right: 14px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Executive summary &mdash; monorepo protection, asset storage, CI compute</h1>
+  <p class="lede">Three decisions an engineering manager needs to make before migrating <em>conjure</em> into a per-path-protected monorepo: which protection rules actually exist on GitHub vs. which the plan assumed; whether to use Git&nbsp;LFS or Cloudflare&nbsp;R2 for binary assets; and whether to stay on GitHub-hosted runners or move to a managed alternative.</p>
+  <nav class="nav">
+    <a href="#tldr">TL;DR</a>
+    <a href="#protection">1. Protection findings</a>
+    <a href="#lfs">2. LFS vs R2</a>
+    <a href="#runners">3. CI runners</a>
+    <a href="#recs">Combined recommendations</a>
+  </nav>
+
+  <h2 id="tldr">TL;DR — three decisions</h2>
+  <div class="grid">
+    <div class="card rec">
+      <h3>1. Protection model</h3>
+      <p>One ruleset, <strong><code>required_approving_review_count = 0</code> + <code>require_code_owner_review = true</code></strong>, plus path-scoped required status checks that always run and skip-as-success. Empirically delivers <strong>US-4, US-5, US-6, US-7</strong>, and US-8 (in the form &ldquo;author merges when sole codeowner of touched paths&rdquo;). <strong>US-3 dropped</strong> &mdash; rulesets aren&rsquo;t path-scoped, all paths go through PRs.</p>
+    </div>
+    <div class="card rec">
+      <h3>2. Binary assets</h3>
+      <p>For conjure&rsquo;s pattern (already running R2 for <code>conjure-artifacts</code>): <strong>R2 wins by &gt;20&times;</strong> on bandwidth-heavy workloads. LFS only beats R2 when assets stay tiny (&lt;5&nbsp;GB) and CI bandwidth is negligible. Keep LFS for <em>build inputs versioned with code</em>; route everything else through R2.</p>
+    </div>
+    <div class="card rec">
+      <h3>3. CI runners</h3>
+      <p><strong>Blacksmith</strong> for fastest activation; <strong>RunsOn</strong> (in your own AWS) if a senior SRE owns CI and compliance matters. Skip BuildJet (shutting down 2026‑03‑31), skip self-hosted Hetzner unless usage is heavy and predictable.</p>
+    </div>
+  </div>
+
+  <!-- ====================================================== -->
+  <h2 id="protection">1. Per-path protection &mdash; the final shape</h2>
+  <p>The validation exercised all 20 user stories. <strong>15 pass</strong> under the recommended ruleset; <strong>US-3 dropped</strong> as out-of-scope; two need a live <code>claude</code> session to verify; US-20 is workflow-logic verified but needs a bot identity to live-fire. The earlier &ldquo;US-3 / US-4 / US-5 / US-8 are all plan-vs-platform mismatches&rdquo; reading was wrong &mdash; an artifact of testing with the PR author as the only CODEOWNER.</p>
+
+  <div class="stats">
+    <div class="stat"><div class="n">20</div><div class="l">user stories</div></div>
+    <div class="stat"><div class="n" style="color:var(--ok)">15</div><div class="l">pass</div></div>
+    <div class="stat"><div class="n" style="color:var(--warn)">1</div><div class="l">dropped (US-3)</div></div>
+    <div class="stat"><div class="n" style="color:var(--bad)">0</div><div class="l">plan mismatch</div></div>
+    <div class="stat"><div class="n">2</div><div class="l">needs claude session</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">logic-only (US-20)</div></div>
+  </div>
+
+  <h3>The recommended config</h3>
+  <pre>name: main-protection
+target: branch
+bypass_actors: []
+rules:
+  - deletion
+  - non_fast_forward
+  - required_linear_history
+  - required_status_checks: [ci-gate, ops-gate, pass, &lt;more path-scoped checks&gt;]
+  - pull_request:
+      required_approving_review_count: 0
+      require_code_owner_review: true
+      require_last_push_approval: false
+      allowed_merge_methods: [squash, rebase]</pre>
+  <p>Why <code>count = 0</code> + <code>codeowner = true</code>: with count &ge; 1, every PR (spike included) needs a review &rarr; US-5 breaks. With count = 0, GitHub gates only on the codeowner rule, which fires only when codeowner-matched paths are in the diff. Spike-only PRs sail through. Prod-touching PRs need a peer codeowner. PRs where the author is the only codeowner of all touched paths merge through silently because no valid reviewer exists &mdash; that&rsquo;s how the author-merges-own-prod-PR pattern works without literal self-approval.</p>
+
+  <h3>The codeowner-isolation experiment</h3>
+  <p>Two test PRs under the recommended ruleset, with CODEOWNERS temporarily pointing at <code>@octocat</code> so the codeowner is not the author:</p>
+  <table>
+    <thead><tr><th>PR</th><th>Touches</th><th>Codeowner match?</th><th>Outcome</th></tr></thead>
+    <tbody>
+      <tr><td>#6 <code>chore/codeowners-test</code></td><td><code>.github/CODEOWNERS</code></td><td>Yes</td><td><span class="pill bad">blocked</span> &mdash; &ldquo;the base branch policy prohibits the merge&rdquo;</td></tr>
+      <tr><td>#7 <code>chore/codeowners-author-test</code></td><td><code>spikes/mock-spike/README.md</code></td><td>No</td><td><span class="pill ok">merged with zero reviews</span></td></tr>
+    </tbody>
+  </table>
+  <p>Then with CODEOWNERS back to <code>@ronaldluc</code> and author = sole codeowner: PR&nbsp;#9 touched <code>prod/mock-app/frontend/index.js</code> and <code>gh pr merge 9 --squash</code> succeeded with no flags. The codeowner rule silently no-ops when there&rsquo;s no valid reviewer other than the author. ✅</p>
+
+  <h3>Three things still don&rsquo;t fit natively (and that&rsquo;s OK)</h3>
+  <ol>
+    <li><strong>US-3 (direct push to main for one path tier)</strong> &mdash; rulesets are per-branch. Dropped from scope; ~30s per spike PR is fine.</li>
+    <li><strong>US-8 as literally worded (&ldquo;author self-approves&rdquo;)</strong> &mdash; GitHub blocks <code>addPullRequestReview</code> with <em>&ldquo;Can not approve your own pull request&rdquo;</em>. The <em>intent</em> (author can ship their own prod change) is preserved by the sole-codeowner mechanism above.</li>
+    <li><strong>UI-only merge enforcement</strong> &mdash; GitHub&rsquo;s web UI and <code>gh pr merge</code> hit the same endpoint. No native way to allow one and forbid the other. Treat as policy.</li>
+  </ol>
+
+  <h3>CI workflow gotcha (still relevant)</h3>
+  <p>Top-level <code>on: pull_request: paths: [prod/**]</code> makes the workflow not trigger when only non-matching paths change &mdash; the required check then shows <em>&ldquo;expected / missing&rdquo;</em> forever and PRs stick. <strong>Fix:</strong> the workflow always starts; the path filter is an inner job (<code>dorny/paths-filter</code>); the gate job uses <code>if: always()</code> to report skip-as-success.</p>
+
+  <!-- ====================================================== -->
+  <h2 id="lfs">2. Git LFS vs Cloudflare R2 &mdash; pricing &amp; fit</h2>
+  <p>Conjure already runs R2 (<code>apps/api/wrangler.toml</code> binds <code>ATTACHMENTS_BUCKET = "conjure-artifacts"</code> on the Workers API). Secrets for <code>OBJECT_STORE_ACCESS_KEY / SECRET_KEY / ENDPOINT</code> are catalogued in <code>SECRETS_MAP.md</code>. The infrastructure to use R2 for repo assets too is already in place.</p>
+
+  <h3>Headline numbers</h3>
+  <table>
+    <thead><tr><th></th><th>Git LFS (GitHub)</th><th>Cloudflare R2 Standard</th></tr></thead>
+    <tbody>
+      <tr><td>Storage</td><td>$5/mo per 50&nbsp;GB pack &nbsp;(=&nbsp;$0.10/GB-mo)</td><td>$0.015/GB-mo &nbsp;(first 10 GB free)</td></tr>
+      <tr><td>Bandwidth (egress)</td><td>$5/mo per 50&nbsp;GB pack &nbsp;(=&nbsp;$0.10/GB)</td><td><strong>$0 &mdash; zero egress fee</strong></td></tr>
+      <tr><td>Free tier</td><td>1&nbsp;GB storage + 1&nbsp;GB bandwidth/mo</td><td>10&nbsp;GB storage + 1M Class&nbsp;A + 10M Class&nbsp;B ops/mo</td></tr>
+      <tr><td>Operations</td><td>n/a (built into bandwidth)</td><td>Class&nbsp;A (writes): $4.50/M &nbsp;&middot;&nbsp; Class&nbsp;B (reads): $0.36/M</td></tr>
+      <tr><td>Git integration</td><td>Native (<code>git-lfs</code> built into git client)</td><td>None &mdash; needs custom transfer agent or out-of-git workflow</td></tr>
+    </tbody>
+  </table>
+  <p>LFS storage and bandwidth share data packs &mdash; one $5 pack adds 50&nbsp;GB to each, not 50&nbsp;GB total. Egress, not storage, drives the bill in practice.</p>
+
+  <h3>Worked scenarios &mdash; what you actually pay</h3>
+  <table>
+    <thead><tr><th>Scenario</th><th>Assets</th><th>CI bandwidth/mo</th><th>LFS cost/mo</th><th>R2 cost/mo</th><th>Winner</th></tr></thead>
+    <tbody>
+      <tr><td>Tiny (just docs PDFs)</td><td>2 GB</td><td>5 GB</td><td>$0 (free tier)</td><td>$0 (free tier)</td><td>tie</td></tr>
+      <tr><td>Small assets, lots of CI clones</td><td>20 GB</td><td>500 GB</td><td>$50 (10 packs)</td><td>$0.30</td><td><strong>R2 by 165&times;</strong></td></tr>
+      <tr><td>Conjure-shape (mp4/glb/safetensors)</td><td>100 GB</td><td>2 TB</td><td>$200 (40 packs)</td><td>$1.50</td><td><strong>R2 by 130&times;</strong></td></tr>
+      <tr><td>ML training-data heavy</td><td>500 GB</td><td>10 TB</td><td>$1,000+</td><td>$7.50</td><td><strong>R2 by 130&times;</strong></td></tr>
+      <tr><td>Static, rarely fetched</td><td>200 GB</td><td>2 GB</td><td>$20 (4 packs)</td><td>$3.00 (Infrequent)</td><td>R2 (still cheaper)</td></tr>
+    </tbody>
+  </table>
+  <p>Math: 1 LFS pack = $5 = 50 GB storage + 50 GB bandwidth. You buy <code>max(ceil(storage / 50), ceil(bandwidth / 50))</code> packs.</p>
+
+  <h3>Operational tradeoffs</h3>
+  <div class="grid">
+    <div class="card warn">
+      <h3>LFS pros</h3>
+      <ul>
+        <li>Zero new tooling &mdash; <code>git lfs install</code> + <code>.gitattributes</code> and it just works.</li>
+        <li>Smudge filter pulls blobs transparently. CI just sets <code>actions/checkout</code> with <code>lfs: true</code>.</li>
+        <li>One ACL surface: GitHub repo permissions cover assets too.</li>
+        <li>Versioned alongside code. Reverting a commit also reverts the asset.</li>
+      </ul>
+    </div>
+    <div class="card warn">
+      <h3>LFS gotchas</h3>
+      <ul>
+        <li>Bandwidth metering is per-clone, per-fork, and per-CI-run. Public-fork pulls bill <em>you</em>.</li>
+        <li>No per-team quota visibility &mdash; you only see the org-wide meter.</li>
+        <li>Rewriting LFS history (e.g. after an accidental commit) is painful and bandwidth-charged.</li>
+        <li>Fork-friendliness: opening to public OSS contributions can spike the bill arbitrarily.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>R2 pros</h3>
+      <ul>
+        <li><strong>Zero egress</strong> &mdash; bandwidth-heavy workloads are essentially free.</li>
+        <li>S3-compatible API &mdash; works with existing tooling (rclone, awscli with endpoint URL, etc.).</li>
+        <li>Infrastructure already paid for in conjure's Workers stack.</li>
+        <li>Auth via signed URLs, per-bucket; multiple buckets cost nothing.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>R2 gotchas</h3>
+      <ul>
+        <li>Not git-native &mdash; you lose &ldquo;the commit and the asset travel together.&rdquo; Compensate with a manifest file in git pinning asset hashes.</li>
+        <li>Custom transfer agent for LFS-via-R2 exists (<code>git-lfs-transfer-agent-s3</code> and similar) but is community-maintained, not vendor-blessed.</li>
+        <li>Class&nbsp;A ops (writes) priced higher than B &mdash; a CI pipeline that uploads many small files can rack ops charges.</li>
+        <li>Different ACL surface from GitHub; rotation of <code>OBJECT_STORE_*</code> keys is your job.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Recommended split for conjure</h3>
+  <ol>
+    <li><strong>Keep Git LFS for the small, build-required, code-versioned set</strong>: design tokens, font files, fixture binaries used by tests, anything where commit == asset. Budget: stay under one $5/mo data pack &mdash; in practice that means &lt; 50 GB <em>both</em> ways.</li>
+    <li><strong>Use R2 for everything else</strong>: training data, large media, snapshot dumps, ML weights. Reference them by content hash in a manifest under <code>data/manifest.json</code> with a small fetcher script. Reproducibility preserved without bloating LFS.</li>
+    <li><strong>Public OSS-readiness check</strong>: if the repo will ever go public, LFS pulls from forks land on <em>your</em> meter. R2 with signed URLs caps that risk.</li>
+  </ol>
+
+  <!-- ====================================================== -->
+  <h2 id="runners">3. CI runners &mdash; Blacksmith and alternatives</h2>
+  <p>The 2026 GitHub-hosted price cut (up to 39% off; standard 2-vCPU now at $0.006/min) reset the math. Most third-party runners are still 2&times; cheaper at the same tier, and 2&times; faster on independent benchmarks &mdash; so the move is still worth it for a 10-person team but the case is no longer overwhelming.</p>
+
+  <h3>Provider comparison at a glance</h3>
+  <table>
+    <thead><tr><th>Provider</th><th>$/min (4-vCPU Linux)</th><th>CPU bench<sup>*</sup></th><th>Cache bench<sup>**</sup></th><th>Code runs where</th><th>Setup</th></tr></thead>
+    <tbody>
+      <tr><td>GitHub-hosted (baseline)</td><td>$0.012</td><td>2,269</td><td>72 s</td><td>GitHub</td><td>none</td></tr>
+      <tr><td><strong>Blacksmith</strong></td><td>$0.004</td><td>4,442</td><td>25 s</td><td>Blacksmith</td><td>label swap</td></tr>
+      <tr><td><strong>Namespace</strong></td><td>$0.004</td><td>4,410</td><td>40 s</td><td>Namespace</td><td>label swap</td></tr>
+      <tr><td><strong>RunsOn</strong></td><td>~$0.0012 (EC2)</td><td>4,268</td><td>42 s</td><td><strong>Your AWS</strong></td><td>CloudFormation</td></tr>
+      <tr><td>Depot</td><td>$0.008</td><td>n/a (NDA)</td><td>n/a (NDA)</td><td>Depot or your AWS</td><td>label + build-action</td></tr>
+      <tr><td>WarpBuild</td><td>$0.008</td><td>3,701</td><td>110 s</td><td>WarpBuild or BYOC</td><td>label swap</td></tr>
+      <tr><td>Ubicloud</td><td>$0.002 / $0.0032</td><td>3,659 (Premium)</td><td>116 s</td><td>Ubicloud (OSS exists)</td><td>label swap</td></tr>
+      <tr><td>Actuated</td><td>$150+/mo flat</td><td>your HW</td><td>your HW</td><td><strong>Your hardware</strong></td><td>provision metal</td></tr>
+      <tr><td>Hetzner self-hosted</td><td>~$0.0004 (sustained)</td><td>varies</td><td>roll your own</td><td>Your VM</td><td>autoscaler + image</td></tr>
+      <tr><td><span class="pill bad">BuildJet</span></td><td colspan="5">Shutting down March 31, 2026 &mdash; do not adopt</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:13px;color:var(--muted);"><sup>*</sup>RunsOn CPU benchmark, Passmark single-thread, higher is better. <sup>**</sup>4&nbsp;GB cache save+restore, lower is better. Source: <a href="https://runs-on.com/benchmarks/github-actions-cpu-performance/">runs-on.com/benchmarks</a>.</p>
+
+  <h3>The three options actually worth shortlisting</h3>
+  <div class="grid">
+    <div class="card rec">
+      <h3>Blacksmith &mdash; default pick</h3>
+      <p><strong>Why:</strong> tier-1 benchmarks (fastest x64 CPU + fastest cache in independent testing), one-label drop-in, 3,000 free min/mo, mature customer base (1,200+ cited).</p>
+      <p><strong>Math for conjure:</strong> 10-person team @ 20k min/mo &asymp; <strong>$68/mo</strong> after free tier vs $120 on GitHub 2-vCPU. ~2&times; wall-clock improvement is the real win, not the dollar delta.</p>
+      <p><strong>Downsides:</strong> code runs in their cloud (same posture as GitHub-hosted, no compliance gain), static IPs cost $100/mo each, macOS pricing is unfriendly.</p>
+    </div>
+    <div class="card rec">
+      <h3>RunsOn &mdash; if you have SRE bandwidth</h3>
+      <p><strong>Why:</strong> &euro;300/yr flat license, 4-vCPU runs at ~$0.0012/min on EC2 (no markup), code never leaves your AWS account &mdash; SOC-2/HIPAA-friendly. Tier-1 benchmarks identical to Blacksmith.</p>
+      <p><strong>Math:</strong> ~50% cheaper than Blacksmith per minute. Spot instances add another 50&ndash;70%.</p>
+      <p><strong>Downsides:</strong> AWS-only. CloudFormation install. You own the AWS bill and IAM &mdash; non-zero SRE work for upgrades, capacity, and audit.</p>
+    </div>
+    <div class="card rec">
+      <h3>Depot &mdash; for Docker-heavy steps</h3>
+      <p><strong>Why:</strong> remote Docker builders with persistent NVMe cache eliminate the slowest part of most CI pipelines. Image builds drop 5&ndash;10&times;.</p>
+      <p><strong>Math:</strong> raw per-minute rate ($0.008) is the same as GitHub legacy &mdash; savings come from the cache making jobs short.</p>
+      <p><strong>Downsides:</strong> highest lock-in (proprietary BuildKit fork, their cache format). ToS forbids public benchmarking &mdash; you cannot verify their claims pre-purchase. <em>Compose with Blacksmith</em> for the rest of the pipeline.</p>
+    </div>
+  </div>
+
+  <h3>When the math does <em>not</em> work</h3>
+  <ul>
+    <li><strong>&lt; 1,000 CI min/mo:</strong> stay on GitHub-hosted. Setup tax beats savings.</li>
+    <li><strong>Public OSS w/o sponsor budget:</strong> GitHub-hosted is free on public; alternatives generally aren't. Some have OSS programs &mdash; apply.</li>
+    <li><strong>Mostly macOS/Windows:</strong> Blacksmith macOS is <em>more</em> expensive than GitHub. Stay put.</li>
+    <li><strong>Bursty &lt; 5k min/mo:</strong> RunsOn / Actuated flat fees become per-minute-expensive. Stay pay-as-you-go.</li>
+    <li><strong>Strict no-third-party-execution policy:</strong> only RunsOn (your AWS), Actuated (your metal), or self-hosted qualify.</li>
+  </ul>
+
+  <h3>Risk callouts</h3>
+  <ol>
+    <li><strong>Vendor longevity is real.</strong> BuildJet was a top-3 player a year ago; it goes dark March 31, 2026. Pick someone with scale (Blacksmith claims 12&times; YoY revenue growth) or an OSS exit ramp (Ubicloud, Actuated).</li>
+    <li><strong>Cache speed often matters more than CPU.</strong> A pnpm + Turborepo pipeline spends 25&ndash;40% of wall-clock on cache save/restore. A 5&times; cache speedup beats a 2&times; CPU bump in that profile. The Turborepo / Bazel integrations Namespace ships are worth a serious look.</li>
+    <li><strong>&ldquo;No public benchmarks&rdquo; clauses are a tell.</strong> Depot's ToS forbids them &mdash; negotiate a trial; do not buy on faith.</li>
+    <li><strong>Self-hosted runners are a documented backdoor vector</strong> (<a href="https://www.praetorian.com/blog/self-hosted-github-runners-are-backdoors/">Praetorian</a>, <a href="https://www.sysdig.com/blog/how-threat-actors-are-using-self-hosted-github-actions-runners-as-backdoors">Sysdig</a>). Ephemeral-per-job is mandatory if you go this route.</li>
+    <li><strong>Billing surprises:</strong> Blacksmith static IPs ($100/mo each), Depot cache overage ($0.20/GB-mo), Hetzner hourly minimum. Set monthly spend alerts before adopting.</li>
+  </ol>
+
+  <!-- ====================================================== -->
+  <h2 id="recs">Combined recommendation for conjure</h2>
+  <ol>
+    <li><strong>Protection:</strong> ship the ruleset with <code>required_approving_review_count: 0 + require_code_owner_review: true</code>. Spike-only PRs sail through with no review (codeowner rule has nothing to fire on); prod-touching PRs need a peer codeowner; PRs where the author is the only codeowner of all touched paths merge silently (US-8 intent). Drop US-3 from scope (no path-scoped direct push); reword US-8 to &ldquo;author can merge own PR&rdquo; not &ldquo;author can self-approve&rdquo; (GitHub blocks the latter at the API).</li>
+    <li><strong>Assets:</strong> route net-new binary content (training data, ML weights, large media) through the existing <code>conjure-artifacts</code> R2 bucket &mdash; pin by hash in a tracked manifest. Keep Git LFS only for asset categories where commit-coupled history genuinely matters and total volume stays &lt; 1 data pack.</li>
+    <li><strong>Compute:</strong> migrate to <strong>Blacksmith</strong> as the default runner (one-line label swap). Cost +speed both improve; activation energy is one PR. If/when CI bill exceeds ~$200/mo or compliance becomes a concern, evaluate <strong>RunsOn-in-our-AWS</strong> as the next hop. Add Depot for the Docker step only if image builds are &gt;30% of pipeline wall-time.</li>
+  </ol>
+
+  <h3>Expected end state</h3>
+  <table>
+    <thead><tr><th>Category</th><th>Today</th><th>After</th><th>Δ</th></tr></thead>
+    <tbody>
+      <tr><td>CI cost @ 20k min/mo</td><td>~$120/mo (GitHub 2-vCPU 2026 rate)</td><td>~$68/mo (Blacksmith) or ~$25/mo (RunsOn+spot)</td><td>~45%&ndash;80% lower</td></tr>
+      <tr><td>CI wall-clock</td><td>baseline</td><td>~2&times; faster (CPU + cache)</td><td>shorter PR feedback loops</td></tr>
+      <tr><td>LFS bill at 100 GB / 2 TB egress</td><td>~$200/mo (40 packs)</td><td>~$1.50/mo (R2)</td><td>~130&times; lower</td></tr>
+      <tr><td>Protection model</td><td>None on main</td><td>Linear history + status checks + CODEOWNER review</td><td>incident class closed</td></tr>
+    </tbody>
+  </table>
+
+  <footer>
+    Generated 2026-05-13 from the live validation run on <a href="https://github.com/ronaldluc/test-subrepo-cicd">github.com/ronaldluc/test-subrepo-cicd</a>. Full per-US results in <code>results.html</code>; raw runner research in <code>_research/blacksmith-runners.md</code>; protection JSON in <code>docs/agents/branch-protection.json</code>.
+  </footer>
+</main>
+</body>
+</html>
