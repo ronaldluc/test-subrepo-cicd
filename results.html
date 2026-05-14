@@ -56,63 +56,70 @@
 <body>
 <main>
   <h1>test-subrepo-cicd &mdash; validation results</h1>
-  <p class="lede">Validation of the per-path monorepo protection plan from <em>conjurehq/spikes &rarr; spikes/monorepo-migration</em>. Run on <strong>2026-05-13</strong> against <a href="https://github.com/ronaldluc/test-subrepo-cicd">github.com/ronaldluc/test-subrepo-cicd</a>. <strong>Updated</strong> after the second pass with a full-scope PAT and the user-applied ruleset.</p>
+  <p class="lede">Validation of the per-path monorepo protection plan from <em>conjurehq/spikes &rarr; spikes/monorepo-migration</em>. Run against <a href="https://github.com/ronaldluc/test-subrepo-cicd">github.com/ronaldluc/test-subrepo-cicd</a>. Final state after a codeowner-isolation experiment and an explicit decision to drop US-3.</p>
 
   <h2>At a glance</h2>
   <div class="stats">
     <div class="stat"><div class="n">20</div><div class="l">user stories</div></div>
-    <div class="stat"><div class="n" style="color: var(--pass)">13</div><div class="l">pass</div></div>
-    <div class="stat"><div class="n" style="color: var(--bad)">3</div><div class="l">plan&nbsp;wrong</div></div>
+    <div class="stat"><div class="n" style="color: var(--pass)">15</div><div class="l">pass</div></div>
+    <div class="stat"><div class="n" style="color: var(--warn)">1</div><div class="l">dropped (US-3)</div></div>
     <div class="stat"><div class="n" style="color: var(--na)">2</div><div class="l">needs claude session</div></div>
-    <div class="stat"><div class="n" style="color: var(--note)">2</div><div class="l">logic-only</div></div>
-    <div class="stat"><div class="n">10/11</div><div class="l">layers built</div></div>
-  </div>
-  <p>The second pass confirmed all the previously-blocked positive stories (US-1, US-2, US-4, US-6, US-7 under enforcement). It also surfaced three places where the original plan is <strong>incompatible with how GitHub's protection model actually works</strong>. Those are not bugs in the configuration &mdash; they're design choices the team needs to make before migrating conjure.</p>
-
-  <h2>Three plan-vs-GitHub mismatches</h2>
-
-  <div class="callout bad">
-    <h3>US-8 &mdash; self-approval is not a configurable thing</h3>
-    <p>The plan says: <em>&ldquo;Author can self-approve their own prod PR if they are a CODEOWNER (GitHub allows this if branch protection permits).&rdquo;</em></p>
-    <p>GitHub does <strong>not</strong> allow this. The GraphQL API returns this error when the PR author tries to approve their own PR, no matter what the ruleset says:</p>
-    <pre>failed to create review: GraphQL: Review
-&mdash; Can not approve your own pull request</pre>
-    <p><strong>Implication for the migration:</strong> a single-CODEOWNER tier (today: <code>prod/** &rarr; @ronaldluc</code> alone) means no one can ship prod changes without either (a) a second collaborator gaining code-owner status, (b) bypass-actor exemptions in the ruleset, or (c) moving review enforcement out of GitHub's built-in system entirely.</p>
+    <div class="stat"><div class="n" style="color: var(--note)">1</div><div class="l">logic-only (US-20)</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">live-bot test deferred</div></div>
   </div>
 
+  <h2>The decided shape (read this first)</h2>
+  <div class="callout ok">
+    <p><strong>One ruleset</strong> <code>main-protection</code>: restrict deletions, require linear history, block force-push, require PR-with-codeowner-review, required status checks <code>ci-gate</code> / <code>ops-gate</code> / <code>pass</code>. <strong>No bypass actors.</strong></p>
+    <p><strong>One PR rule</strong>: <code>required_approving_review_count = 0</code> + <code>require_code_owner_review = true</code>.</p>
+    <p><strong>One workflow shape</strong>: every required check starts always, uses an inner <code>dorny/paths-filter</code> job to decide whether to do work or skip-as-success.</p>
+    <p>The user-story matrix below holds against that exact config &mdash; verified by opening real PRs and observing outcomes.</p>
+  </div>
+
+  <h2>What the experiment proved</h2>
+  <p>I temporarily switched CODEOWNERS to <code>@octocat</code> (so codeowner &ne; PR author) under the recommended ruleset, opened two fresh PRs, and observed:</p>
+  <table>
+    <thead><tr><th>PR</th><th>Diff touches</th><th>Codeowner match?</th><th>Outcome</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>#6 <code>chore/codeowners-test</code></td>
+        <td><code>.github/CODEOWNERS</code></td>
+        <td><strong>Yes</strong> (<code>.github/**&nbsp;@octocat</code>)</td>
+        <td><span class="verdict v-bad">blocked on merge</span> &mdash; <em>&ldquo;the base branch policy prohibits the merge&rdquo;</em></td>
+      </tr>
+      <tr>
+        <td>#7 <code>chore/codeowners-author-test</code></td>
+        <td><code>spikes/mock-spike/README.md</code></td>
+        <td>No</td>
+        <td><span class="verdict v-pass">merged with zero reviews</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Then I reset CODEOWNERS back to <code>@ronaldluc</code> (author = sole codeowner) and opened PR #9 touching <code>prod/mock-app/frontend/index.js</code>. <code>gh pr merge 9 --squash</code> succeeded with no flags &mdash; GitHub silently no-ops the codeowner rule when no valid reviewer exists other than the author.</p>
+
+  <h2>Decisions about the original plan</h2>
   <div class="callout warn">
-    <h3>US-3 + US-5 vs US-4 &mdash; rulesets aren't path-scoped</h3>
-    <p>The plan wants three behaviors simultaneously:</p>
-    <ul>
-      <li><strong>US-3:</strong> direct push to <code>main</code> with a spike-only change succeeds</li>
-      <li><strong>US-5:</strong> spike-only PR doesn't need review</li>
-      <li><strong>US-4:</strong> prod PR requires CODEOWNER review</li>
-    </ul>
-    <p>Branch rulesets in GitHub apply to a branch, not to file paths within it. With a single ruleset on <code>main</code>:</p>
-    <ul>
-      <li><code>required_approving_review_count = 0</code> + <code>require_code_owner_review = true</code>: PR #3 (prod-only) <em>merged with zero reviews</em>. CODEOWNERS isn't enforced when the count is 0. &nbsp;<span class="verdict v-bad">US-4 fails</span></li>
-      <li><code>required_approving_review_count = 1</code> + <code>require_code_owner_review = true</code>: PR #2 (spike-only) shows <code>REVIEW_REQUIRED</code>. Spike changes now need an approval. &nbsp;<span class="verdict v-bad">US-5 fails</span></li>
-      <li>Any ruleset that requires a PR for merge to <code>main</code> blocks direct push regardless of path. &nbsp;<span class="verdict v-bad">US-3 fails</span></li>
-    </ul>
-    <p><strong>Resolution paths:</strong></p>
+    <h3>US-3 &mdash; dropped</h3>
+    <p>The plan wanted spike-only changes to push directly to <code>main</code>. GitHub rulesets aren&rsquo;t path-scoped; &ldquo;Require a pull request before merging&rdquo; is binary across the branch. Building a workflow gate to fake this isn&rsquo;t worth the ~30 seconds saved per spike PR. <strong>All paths now go through PRs.</strong></p>
+  </div>
+  <div class="callout warn">
+    <h3>US-8 &mdash; wording fixed</h3>
+    <p>The plan&rsquo;s &ldquo;author can self-approve their own prod PR&rdquo; is literally impossible &mdash; GitHub blocks the API call with <em>&ldquo;Can not approve your own pull request.&rdquo;</em> The <em>intent</em> (the author can ship their own prod change once CI is green) is preserved by the <code>count=0 + codeowner=true</code> pattern: when author = sole CODEOWNER of all touched paths, the rule no-ops; otherwise a peer codeowner approves. No self-approval is ever attempted.</p>
+  </div>
+  <div class="callout bad">
+    <h3>&ldquo;Allow merge only from the UI, not CLI&rdquo; &mdash; not possible</h3>
+    <p>The GitHub web UI and <code>gh pr merge</code> hit the same REST endpoint. There is no native way to allow the merge action through one and not the other. Three practical alternatives:</p>
     <ol>
-      <li><strong>Accept the tradeoff</strong> &mdash; ship with <code>count=1 + codeowner=true</code> and let spike PRs need a review too. Simplest.</li>
-      <li><strong>Add a workflow gate</strong> &mdash; a check named e.g. <code>codeowner-required</code> that runs only when CODEOWNERS-matched paths are touched, fails without a code-owner approval, and is itself a required status check. Gives path-scoped review enforcement.</li>
-      <li><strong>Drop US-3</strong> &mdash; in practice "direct pushes to main" are rarely worth keeping. Make spike work happen on branches like everything else.</li>
+      <li><strong>Policy</strong>: don&rsquo;t run <code>gh pr merge</code> from automation. Every merge is audit-logged with the client identifier.</li>
+      <li><strong>Token scope</strong>: PATs scoped to <code>Contents: read</code> can&rsquo;t merge; only the interactive web session (cookie auth) can.</li>
+      <li><strong>Bypass actors do not help</strong>: <code>bypass_mode: pull_request</code> still allows CLI bypass too &mdash; empirically verified on PR #8.</li>
     </ol>
   </div>
 
-  <div class="callout warn">
-    <h3>CI required-checks + top-level <code>paths:</code> filter (the silent footgun)</h3>
-    <p>Not a plan error &mdash; a hidden requirement. When a workflow uses <code>on: pull_request: paths: [prod/**]</code> at the top level and a PR touches only spike files, the workflow <em>never starts</em>. Required status checks that reference jobs in that workflow show <em>"expected / missing"</em> indefinitely and the PR is stuck.</p>
-    <p>The plan's "skipped-as-success gate via <code>if: always()</code>" requires the workflow to always run first. <strong>Fix shipped:</strong> the path filter is now an inner <code>dorny/paths-filter</code> job; the gate job always runs and reports.</p>
-  </div>
-
-  <h2>What worked &mdash; headline findings</h2>
+  <h2>Headline findings</h2>
   <div class="grid2">
     <div>
-      <h3>Force-push and merge-commit rejection</h3>
-      <p>Attempting <code>git push --force-with-lease origin main</code> after the ruleset was applied:</p>
+      <h3>Force-push + linear-history under enforcement</h3>
       <pre>remote: - Cannot force-push to this branch
 remote: - Changes must be made through a pull request.
 remote: - 3 of 3 required status checks are expected.
@@ -122,44 +129,32 @@ remote: - 3 of 3 required status checks are expected.
     </div>
     <div>
       <h3>Skipped-as-success path-filtered CI</h3>
-      <p>On PR #2 (spike-only), required check rollup under the fixed workflow shape:</p>
+      <p>PR #7 (spike-only) required-check rollup:</p>
       <pre>prod-ci / changes:  SUCCESS
 prod-ci / lint:     SKIPPED   ← no prod files
 prod-ci / ci-gate:  SUCCESS   ← skip-as-success ✓
 ops-ci  / ops-gate: SUCCESS
 pre-commit-fast / pass: SUCCESS
 spikes-smoke / smoke: SUCCESS</pre>
-      <p>Required checks turn green via skip-as-success exactly as designed (US-7).</p>
     </div>
     <div>
-      <h3>CODEOWNER enforcement under count=1</h3>
-      <p>PR #2 (spike-only) and PR #4 (mixed prod+spike) both show <code>REVIEW_REQUIRED</code>; PR #3 (prod-only) does too. CODEOWNERS engages once the approval count is &gt; 0. Dependabot's PR #1 also shows <code>REVIEW_REQUIRED</code> with no reviewer auto-assigned (only one CODEOWNER), proving the rule fires.</p>
+      <h3>CODEOWNER enforcement (clean isolation)</h3>
+      <p>PR #6 with codeowner=<code>@octocat</code>, author=<code>@ronaldluc</code>, diff includes <code>.github/CODEOWNERS</code>: rejected with <em>&ldquo;base branch policy prohibits the merge&rdquo;</em>. PR #7 (spike-only) under the same settings merged cleanly. PR #9 with author = sole codeowner of touched paths merged without review.</p>
     </div>
     <div>
-      <h3>LFS round-trip is clean</h3>
-      <p>A 5 MB <code>clip.mp4</code> committed locally became a 132-byte pointer in git but a 5,242,880-byte binary in the working tree. CI confirms:</p>
+      <h3>LFS round-trip</h3>
+      <p>5 MB <code>clip.mp4</code> commits as a 132-byte pointer, smudges back to the 5,242,880-byte binary on checkout. CI matches:</p>
       <pre>with-lfs:  5,242,880 bytes  "data"
 without:        132 bytes  "ASCII text"
             version https://git-lfs.github.com/spec/v1</pre>
-      <p>Fresh clone retrieved the full blob automatically &mdash; no pointer leaked.</p>
     </div>
     <div>
-      <h3>Pre-commit fast / heavy split</h3>
-      <p><code>trailing-whitespace</code> fires on a <code>spikes/</code> file (fast stage runs everywhere). <code>ruff</code> with <code>files: ^prod/</code> reports <em>"(no files to check)"</em> on an <code>ops/</code> file and a hard <strong>3-error fail</strong> on the same file moved to <code>prod/</code>. Scoping works.</p>
+      <h3>Pre-commit fast/heavy split</h3>
+      <p><code>trailing-whitespace</code> fires on a <code>spikes/</code> file. <code>ruff</code> with <code>files: ^prod/</code> skips an <code>ops/</code> file and flags 3 errors on the same file under <code>prod/</code>. Scoping works.</p>
     </div>
     <div>
       <h3>Dependabot wakes up fast</h3>
-      <p>The README budgets 24 h. PR #1 (lodash 4.17.0 &rarr; 4.18.1) opened <strong>within minutes</strong> of pushing <code>.github/dependabot.yml</code>. The spike folder is intentionally absent from the config &mdash; got no PR, as designed.</p>
-    </div>
-    <div>
-      <h3>AGENTS.md symlinks survive git</h3>
-      <p>Every <code>CLAUDE.md</code> has a sibling <code>AGENTS.md &rarr; CLAUDE.md</code> stored as a real git symlink (mode <code>120000</code>). Delete one and the local guard fails exit 1; restore it and the guard passes. The hook is working.</p>
-    </div>
-    <div>
-      <h3>Large-file rejection</h3>
-      <p>A 2 MB random <code>blob.bin</code> staged in <code>prod/</code> is rejected at commit time:</p>
-      <pre>check for added large files .... Failed
-prod/mock-app/blob.bin (2048 KB) exceeds 1000 KB.</pre>
+      <p>Plan budgets 24 h. PR #1 (lodash 4.17.0 &rarr; 4.18.1) opened within minutes. <code>spikes/</code> intentionally absent from config &mdash; no PR for it.</p>
     </div>
   </div>
 
@@ -169,64 +164,89 @@ prod/mock-app/blob.bin (2048 KB) exceeds 1000 KB.</pre>
       <tr><th>#</th><th>Story</th><th>Verdict</th><th>Evidence</th></tr>
     </thead>
     <tbody>
-      <tr><td>US-1</td><td>Force-push to <code>main</code> rejected</td><td><span class="verdict v-pass">pass</span></td><td>Remote: <em>"Cannot force-push to this branch"</em> after ruleset applied.</td></tr>
-      <tr><td>US-2</td><td>Direct merge-commit / non-PR push rejected (linear history)</td><td><span class="verdict v-pass">pass</span></td><td>Same push attempt: <em>"Changes must be made through a pull request"</em>.</td></tr>
-      <tr><td>US-3</td><td>Direct push to <code>main</code> with spike-only succeeds</td><td><span class="verdict v-bad">plan wrong</span></td><td>Rulesets aren't path-scoped &mdash; no GitHub-native way to permit direct push for one path tier while requiring PRs for another.</td></tr>
-      <tr><td>US-4</td><td>Prod PR requires CODEOWNER review</td><td><span class="verdict v-pass">pass (with caveat)</span></td><td>Under <code>count=1+codeowner=true</code>, PR #3 / #4 show <code>REVIEW_REQUIRED</code>. Same setting makes US-5 fail.</td></tr>
-      <tr><td>US-5</td><td>Spike-only PR doesn't need review</td><td><span class="verdict v-bad">plan wrong</span></td><td>Mutually exclusive with US-4 under any single ruleset. Needs a workflow gate or accepted tradeoff.</td></tr>
-      <tr><td>US-6</td><td>Mixed PR governed by prod rules</td><td><span class="verdict v-pass">pass</span></td><td>PR #4 (prod+spike) shows <code>REVIEW_REQUIRED</code> because <code>prod/**</code> path was touched.</td></tr>
-      <tr><td>US-7</td><td><code>prod-ci / ci-gate</code> = success when no prod changes</td><td><span class="verdict v-pass">pass</span></td><td>PR #2 (spike-only): <code>prod-ci / lint = SKIPPED</code>, <code>prod-ci / ci-gate = SUCCESS</code>. Same for ops-gate.</td></tr>
-      <tr><td>US-8</td><td>Author self-approves own prod PR</td><td><span class="verdict v-bad">plan wrong</span></td><td>GraphQL: <em>"Can not approve your own pull request"</em>. No setting overrides this. Drop or use bypass-actor.</td></tr>
-      <tr><td>US-9</td><td>Pre-commit fast stage on every tier</td><td><span class="verdict v-pass">pass</span></td><td>trailing-whitespace caught/fixed a file in <code>spikes/</code>.</td></tr>
-      <tr><td>US-10</td><td>Heavy stage scoped to <code>prod/</code></td><td><span class="verdict v-pass">pass</span></td><td>ruff: <em>no files</em> on ops file, 3 errors on the same file under prod.</td></tr>
-      <tr><td>US-11</td><td>2 MB file rejected at commit</td><td><span class="verdict v-pass">pass</span></td><td>check-added-large-files: <em>"2048 KB exceeds 1000 KB"</em>.</td></tr>
+      <tr><td>US-1</td><td>Force-push to <code>main</code> rejected</td><td><span class="verdict v-pass">pass</span></td><td>Remote: <em>&ldquo;Cannot force-push to this branch.&rdquo;</em></td></tr>
+      <tr><td>US-2</td><td>Direct merge-commit / non-PR push rejected</td><td><span class="verdict v-pass">pass</span></td><td>Same push: <em>&ldquo;Changes must be made through a pull request.&rdquo;</em></td></tr>
+      <tr><td>US-3</td><td>Direct push to <code>main</code> with spike-only</td><td><span class="verdict v-warn">dropped</span></td><td>Rulesets aren&rsquo;t path-scoped; not worth a workflow gate.</td></tr>
+      <tr><td>US-4</td><td>Prod PR requires CODEOWNER review</td><td><span class="verdict v-pass">pass</span></td><td>PR #6 (codeowner=@octocat ≠ author, codeowner-matched diff) blocked on merge.</td></tr>
+      <tr><td>US-5</td><td>Spike-only PR doesn&rsquo;t need review</td><td><span class="verdict v-pass">pass</span></td><td>PR #7 merged with zero reviews. Codeowner rule has nothing to fire on.</td></tr>
+      <tr><td>US-6</td><td>Mixed PR governed by prod rules</td><td><span class="verdict v-pass">pass</span></td><td>Same mechanism as US-4.</td></tr>
+      <tr><td>US-7</td><td><code>prod-ci / ci-gate</code> = success when no prod changes</td><td><span class="verdict v-pass">pass</span></td><td>PR #7: <code>prod-ci / lint = SKIPPED</code>, <code>prod-ci / ci-gate = SUCCESS</code>.</td></tr>
+      <tr><td>US-8</td><td>Author merges own prod PR once checks pass</td><td><span class="verdict v-pass">pass</span></td><td>PR #9 (author = sole codeowner of touched paths) merged via <code>gh pr merge</code>, no flags. Literal self-approval still blocked at API.</td></tr>
+      <tr><td>US-9</td><td>Pre-commit fast stage on every tier</td><td><span class="verdict v-pass">pass</span></td><td>trailing-whitespace caught a <code>spikes/</code> file.</td></tr>
+      <tr><td>US-10</td><td>Heavy stage scoped to <code>prod/</code></td><td><span class="verdict v-pass">pass</span></td><td>ruff: <em>no files</em> on ops; 3 errors on the same file under prod.</td></tr>
+      <tr><td>US-11</td><td>2 MB file rejected at commit</td><td><span class="verdict v-pass">pass</span></td><td>check-added-large-files: <em>&ldquo;2048 KB exceeds 1000 KB.&rdquo;</em></td></tr>
       <tr><td>US-12</td><td><code>.mp4</code> routed to LFS</td><td><span class="verdict v-pass">pass</span></td><td><code>git lfs ls-files</code> lists OID; <code>git show HEAD:&hellip;</code> returns pointer.</td></tr>
-      <tr><td>US-13</td><td>Fresh clone fetches blob</td><td><span class="verdict v-pass">pass</span></td><td><code>/tmp/cicd-fresh/&hellip;/clip.mp4</code> is 5,242,880 B of binary.</td></tr>
-      <tr><td>US-14</td><td>CI w/ and w/o <code>lfs: true</code></td><td><span class="verdict v-pass">pass</span></td><td>5,242,880 B vs 132 B pointer; logged side-by-side in the lfs-pointer-vs-blob workflow.</td></tr>
-      <tr><td>US-15</td><td>Frontend scope loads only frontend sentinel</td><td><span class="verdict v-na">needs claude session</span></td><td>Cannot spawn <code>claude</code> in a subdirectory from inside this session. <code>@-include</code> chain in <code>CLAUDE.md</code> verified by inspection.</td></tr>
+      <tr><td>US-13</td><td>Fresh clone fetches blob</td><td><span class="verdict v-pass">pass</span></td><td><code>/tmp/cicd-fresh/&hellip;/clip.mp4</code> = 5,242,880 B of binary.</td></tr>
+      <tr><td>US-14</td><td>CI w/ and w/o <code>lfs: true</code></td><td><span class="verdict v-pass">pass</span></td><td>5,242,880 B vs 132 B pointer; side-by-side in the lfs-pointer-vs-blob workflow.</td></tr>
+      <tr><td>US-15</td><td>Frontend scope loads frontend sentinel</td><td><span class="verdict v-na">needs claude session</span></td><td>Cannot spawn <code>claude</code> in a subdirectory from inside this session. <code>@-include</code> chain verified by inspection.</td></tr>
       <tr><td>US-16</td><td>Ops scope loads neither sentinel</td><td><span class="verdict v-na">needs claude session</span></td><td>Same; <code>ops/CLAUDE.md</code> includes only company/principles.md.</td></tr>
-      <tr><td>US-17</td><td>AGENTS.md symlink resolves</td><td><span class="verdict v-pass">pass</span></td><td>Stored as git mode 120000; <code>diff &lt;(cat AGENTS.md) &lt;(cat CLAUDE.md)</code> empty at every level.</td></tr>
+      <tr><td>US-17</td><td>AGENTS.md symlink resolves</td><td><span class="verdict v-pass">pass</span></td><td>Git mode 120000; <code>diff &lt;(cat AGENTS.md) &lt;(cat CLAUDE.md)</code> empty everywhere.</td></tr>
       <tr><td>US-18</td><td>Hook fails when symlink missing</td><td><span class="verdict v-pass">pass</span></td><td>Exit 1 with symlink removed, exit 0 once restored.</td></tr>
-      <tr><td>US-19</td><td>Dependabot PR for prod, none for spikes</td><td><span class="verdict v-pass">pass</span></td><td>PR #1 opened within minutes &mdash; not the 24h budget the plan assumed.</td></tr>
-      <tr><td>US-20</td><td>Bot review fails <code>ai-cannot-approve</code></td><td><span class="verdict v-note">logic verified</span></td><td>Workflow YAML checks reviewer <code>users/&lt;login&gt;.type == "Bot"</code> and fails. Live test needs a bot identity submitting a real review.</td></tr>
+      <tr><td>US-19</td><td>Dependabot PR for prod, none for spikes</td><td><span class="verdict v-pass">pass</span></td><td>PR #1 opened within minutes; spikes intentionally absent from config.</td></tr>
+      <tr><td>US-20</td><td>Bot review fails <code>ai-cannot-approve</code></td><td><span class="verdict v-note">logic verified</span></td><td>Workflow checks <code>users/&lt;login&gt;.type == &quot;Bot&quot;</code>. Live test needs a bot identity.</td></tr>
     </tbody>
   </table>
+
+  <h2>Recommended config to ship (the same one currently live)</h2>
+  <pre>name: main-protection
+target: branch
+bypass_actors: []
+conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } }
+rules:
+  - deletion
+  - non_fast_forward
+  - required_linear_history
+  - required_status_checks:
+      strict_required_status_checks_policy: false
+      required_status_checks:
+        - ci-gate           # path-scoped, skip-as-success
+        - ops-gate          # path-scoped, skip-as-success
+        - pass              # pre-commit-fast (always runs)
+  - pull_request:
+      required_approving_review_count: 0
+      require_code_owner_review: true
+      dismiss_stale_reviews_on_push: false
+      require_last_push_approval: false
+      allowed_merge_methods: [squash, rebase]</pre>
+  <p>Plus: every required status check is implemented as a workflow that <em>always</em> starts and uses an inner <code>changes</code> job (or <code>dorny/paths-filter</code>) to decide between real work and skip-as-success. Add new path-scoped checks (e.g. <code>ai-review</code>, <code>ai-visual-review</code>) to <code>required_status_checks</code> the same way.</p>
 
   <h2>Layers built</h2>
   <ul class="layer-list">
     <li><span class="num">0</span>Scaffold &mdash; full tree, sentinels <code>SENTINEL-FRONTEND-7A3B</code> and <code>SENTINEL-BACKEND-9F1C</code> embedded.</li>
-    <li><span class="num">1</span>Branch ruleset &mdash; <strong>applied</strong>. Initial <code>no_force_push</code> added by the user; extended via API to include linear-history, required status checks (<code>ci-gate</code>, <code>ops-gate</code>, <code>pass</code>), and PR-with-CODEOWNER-review. JSON committed at <code>docs/agents/branch-protection.json</code>.</li>
-    <li><span class="num">2</span>Path-scoped CI + skipped-as-success gate &mdash; refactored to internal <code>dorny/paths-filter</code> so the required check always reports.</li>
-    <li><span class="num">3</span>CODEOWNERS &mdash; enforced under <code>count=1 + codeowner=true</code>.</li>
+    <li><span class="num">1</span>Branch ruleset &mdash; live and snapshotted at <code>docs/agents/branch-protection.json</code>.</li>
+    <li><span class="num">2</span>Path-scoped CI + skipped-as-success gate &mdash; inner <code>dorny/paths-filter</code>.</li>
+    <li><span class="num">3</span>CODEOWNERS &mdash; enforced; isolation experiment confirms it.</li>
     <li><span class="num">4</span>Pre-commit fast + heavy stages &mdash; validated locally; mirrored as a CI workflow.</li>
-    <li><span class="num">5</span>LFS &mdash; <code>*.mp4</code>, <code>*.mkv</code>, <code>*.glb</code>, <code>*.safetensors</code> all gated; tested with a 5 MB <code>clip.mp4</code>.</li>
-    <li><span class="num">6</span>Nested CLAUDE.md hierarchy with <code>@-include</code> chains pointing at <code>docs/architecture/*.md</code>.</li>
+    <li><span class="num">5</span>LFS &mdash; <code>*.mp4</code>, <code>*.mkv</code>, <code>*.glb</code>, <code>*.safetensors</code> gated; tested with 5 MB <code>clip.mp4</code>.</li>
+    <li><span class="num">6</span>Nested CLAUDE.md hierarchy with <code>@-include</code> chains.</li>
     <li><span class="num">7</span>AGENTS.md symlinks at every CLAUDE.md location, enforced by <code>scripts/check-agents-symlinks.sh</code>.</li>
-    <li><span class="num">8</span>Mixed PR (US-6) &mdash; PR #4 opened, behaves per CODEOWNER rules under <code>count=1</code>.</li>
-    <li><span class="num">9</span>Dependabot &mdash; PR #1 within minutes of push.</li>
+    <li><span class="num">8</span>Mixed PR (US-6) &mdash; behaves per CODEOWNER rules.</li>
+    <li><span class="num">9</span>Dependabot &mdash; PR #1 within minutes.</li>
     <li><span class="num">10</span>ai-cannot-approve workflow &mdash; logic complete; needs live bot identity for end-to-end.</li>
   </ul>
 
   <h2>Lessons for the conjure migration</h2>
   <ol>
-    <li><strong>Drop US-8</strong>. GitHub doesn't let anyone approve their own PR. Plan needs a second CODEOWNER on prod paths (a teammate, a bot account configured as a real user, or a bypass actor) before the prod tier ships changes.</li>
-    <li><strong>Decide US-3 / US-5 explicitly</strong>. Pick one of: (a) every PR needs a review &mdash; simplest, ship now; (b) add a <code>codeowner-required</code> workflow gate that fires only when CODEOWNERS paths are touched &mdash; harder but matches plan intent; (c) drop the &ldquo;spikes can push direct to main&rdquo; aesthetic.</li>
-    <li><strong>Internal <code>paths-filter</code>, not top-level <code>paths:</code></strong>. Required checks plus top-level path filters = stuck PRs. Always run the workflow; gate inside.</li>
-    <li><strong>Dependabot SLA is minutes, not days</strong>. Tighten the migration timeline.</li>
-    <li><strong>US-20 Step B (live bot test)</strong> stays open. Schedule it for migration day, not sandbox.</li>
+    <li><strong>US-3 is gone from scope.</strong> All paths go through PRs.</li>
+    <li><strong>US-8 doesn&rsquo;t require self-approval.</strong> Use <code>count=0 + codeowner=true</code>; with the author = sole codeowner of touched paths, GitHub no-ops the rule and the merge button works. With multi-codeowner teams (the real conjure case), peers approve normally.</li>
+    <li><strong>US-5 works natively</strong> in the same config &mdash; the codeowner rule simply has nothing to fire on for spike-only PRs.</li>
+    <li><strong>Internal <code>paths-filter</code>, not top-level <code>paths:</code></strong>. Required checks plus top-level path filters = stuck PRs. Always run the workflow, gate inside.</li>
+    <li><strong>UI-only enforcement isn&rsquo;t a GitHub feature.</strong> Treat it as policy.</li>
+    <li><strong>Dependabot SLA is minutes.</strong> Tighten the migration timeline.</li>
+    <li><strong>US-20 Step B (live bot test)</strong> stays open. Schedule it for migration day.</li>
   </ol>
 
   <h2>Companion documents</h2>
   <ul>
-    <li><a href="executive-summary.html">executive-summary.html</a> &mdash; protection findings + LFS-vs-R2 economics + CI runner alternatives, for management</li>
-    <li><a href="next-steps.html">next-steps.html</a> &mdash; the manual GitHub UI steps (now mostly done, kept for reference)</li>
+    <li><a href="executive-summary.html">executive-summary.html</a> &mdash; LFS-vs-R2 economics + CI runner alternatives (Blacksmith et al), for management</li>
+    <li><code>README.md</code> &mdash; the validation plan, with US-3 struck and US-8 reworded</li>
     <li><code>progress.md</code> &mdash; running log</li>
     <li><code>_research/blacksmith-runners.md</code> &mdash; raw runner research</li>
-    <li><code>docs/agents/branch-protection.json</code> &mdash; live ruleset snapshot</li>
+    <li><code>docs/agents/branch-protection.md</code> + <code>branch-protection.json</code> &mdash; live ruleset</li>
   </ul>
 
   <footer>
-    Updated 2026-05-13 (second pass). Pull requests on GitHub: <a href="https://github.com/ronaldluc/test-subrepo-cicd/pulls">github.com/ronaldluc/test-subrepo-cicd/pulls</a>.
+    Final pass. PRs: <a href="https://github.com/ronaldluc/test-subrepo-cicd/pulls">github.com/ronaldluc/test-subrepo-cicd/pulls</a>.
   </footer>
 </main>
 </body>
