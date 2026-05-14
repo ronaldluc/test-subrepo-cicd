@@ -67,6 +67,7 @@
     <div class="stat"><div class="n" style="color: var(--note)">1</div><div class="l">logic-only (US-20)</div></div>
     <div class="stat"><div class="n">1</div><div class="l">live-bot test deferred</div></div>
   </div>
+  <p style="color: var(--muted); font-size: 13px; margin-top: -8px;">Plus 10 augmentation stories (US-21 &ndash; US-30) from the second-round Q&amp;A &mdash; 1 already verified (US-25), the rest designed and ready to build. See &ldquo;Augmentation roadmap&rdquo; below.</p>
 
   <h2>The decided shape (read this first)</h2>
   <div class="callout ok">
@@ -224,6 +225,37 @@ rules:
     <li><span class="num">9</span>Dependabot &mdash; PR #1 within minutes.</li>
     <li><span class="num">10</span>ai-cannot-approve workflow &mdash; logic complete; needs live bot identity for end-to-end.</li>
   </ul>
+
+  <h2>Augmentation roadmap (post-Q&amp;A)</h2>
+  <p>A round of clarifying questions surfaced ten additional user stories. Verdicts will fill in as each ships. Full design notes: <code>docs/agents/docs-protection.md</code>, <code>docs/agents/ai-review-pipeline.md</code>, and README &sect;Augmentations.</p>
+  <table>
+    <thead><tr><th>#</th><th>Story</th><th>Where it lives</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>US-21</td><td>PR deleting &ge; 20 docs files flagged by <code>docs-sanity</code></td><td>workflow + Layer 1 model call</td><td><span class="verdict v-note">designed</span></td></tr>
+      <tr><td>US-22</td><td>Code PR contradicting its sibling doc gets a drift comment</td><td><code>docs-drift</code> dispatcher + subagents</td><td><span class="verdict v-note">designed</span></td></tr>
+      <tr><td>US-23</td><td><code>ops/orders/manifest.json</code> hash resolves to an existing R2 object</td><td>manifest + fetcher script</td><td><span class="verdict v-note">designed</span></td></tr>
+      <tr><td>US-24</td><td>CI&rsquo;s R2 token cannot delete objects (Delete returns 403)</td><td>scoped IAM policy on the bucket</td><td><span class="verdict v-note">designed</span></td></tr>
+      <tr><td>US-25</td><td>Alice&rsquo;s untracked files in <code>spikes/alice/X/</code> survive a pull that deletes <code>spikes/alice/X/</code></td><td>verified by experiment</td><td><span class="verdict v-pass">pass</span></td></tr>
+      <tr><td>US-26</td><td>Each <code>prod/&lt;product&gt;/</code> has its own <code>make test</code></td><td>per-product Makefile</td><td><span class="verdict v-note">designed</span></td></tr>
+      <tr><td>US-27</td><td>Root <code>make test PATHS=&hellip;</code> dispatches correctly</td><td>root dispatcher Makefile</td><td><span class="verdict v-note">designed</span></td></tr>
+      <tr><td>US-28</td><td>CodeRabbit posts review within &le; 5 min on every PR</td><td>CodeRabbit App + <code>.coderabbit.yaml</code></td><td><span class="verdict v-note">designed</span></td></tr>
+      <tr><td>US-29</td><td>Claude-Code-bot review comments appear on prod-touching PRs</td><td><code>claude-deep-review.yml</code> + bot account</td><td><span class="verdict v-note">designed</span></td></tr>
+      <tr><td>US-30</td><td>Chrome MCP journey-test workflow catches a regression on a known-broken preview</td><td><code>journey-test.yml</code> + Chrome MCP</td><td><span class="verdict v-note">designed</span></td></tr>
+    </tbody>
+  </table>
+
+  <h3>Spike-folder collision &mdash; what `git pull` actually does (US-25 evidence)</h3>
+  <p>Empirical, reproducible: <code>_research/git-folder-collision.sh</code>.</p>
+  <table>
+    <thead><tr><th>Alice&rsquo;s local state</th><th>Bob deletes folder &amp; pushes; Alice pulls&hellip;</th></tr></thead>
+    <tbody>
+      <tr><td>Only <strong>untracked</strong> files in the folder</td><td>pull succeeds; untracked files <em>survive</em>; tracked files gone; folder stays</td></tr>
+      <tr><td><strong>Modified tracked</strong> + untracked files</td><td><strong>pull refused</strong>: <em>&ldquo;Your local changes&hellip; would be overwritten by merge&rdquo;</em></td></tr>
+      <tr><td><strong>Staged-but-uncommitted</strong> new files</td><td>pull succeeds; staged file <em>survives</em></td></tr>
+      <tr><td>Same, then runs <code>git clean -fd</code></td><td>untracked files <strong>obliterated</strong> &mdash; the only real risk path</td></tr>
+    </tbody>
+  </table>
+  <p>Linux mechanics: git uses <code>unlink(2)</code> per tracked file then <code>rmdir(2)</code>; the latter returns <code>ENOTEMPTY</code> if untracked content remains. There is no kernel-level concern about &ldquo;unlinking a folder with files&rdquo;. Risk class is <code>git clean -fd</code> (developer education) or coordinated force-pushes (out of scope for protected branches).</p>
 
   <h2>Lessons for the conjure migration</h2>
   <ol>

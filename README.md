@@ -5,6 +5,8 @@ A throwaway repo to validate the protection model from
 
 **Goal:** end the validation with binary answers to every mechanism in the migration plan — does each behave as designed in a real GitHub repo, with real CI, real CODEOWNERS, real LFS — *before* committing the conjure monorepo to it.
 
+> **Status (2026-05-14):** First-pass validation done — 15 of 20 user stories pass under the live ruleset; US-3 dropped; US-8 mechanism documented. See `results.html` for verdicts and `executive-summary.html` for the LFS-vs-R2 and CI-runner findings. This README is now the *augmented* plan after the Q&A round below — additional stories US-21+ are open.
+
 ## Architecture under test (simplest viable version)
 
 ```
@@ -22,22 +24,24 @@ test-subrepo-cicd/
 ├── AGENTS.md → CLAUDE.md         # symlink
 ├── prod/
 │   ├── CLAUDE.md  AGENTS.md→
-│   └── mock-app/
-│       ├── CLAUDE.md  AGENTS.md→
-│       ├── package.json          # for Dependabot test
-│       ├── frontend/
-│       │   ├── CLAUDE.md         # @-includes docs/architecture/frontend.md
-│       │   └── index.js
-│       └── backend/
-│           ├── CLAUDE.md         # @-includes docs/architecture/backend.md
-│           └── main.py
-├── ops/
+│   ├── conjure_tech/             # current conjure.tech (minus analytics)
+│   │   ├── CLAUDE.md  AGENTS.md→
+│   │   ├── frontend/ backend/    # each with its own CLAUDE.md
+│   │   └── Makefile              # `make test` runs tests *for this project only*
+│   ├── analytics/                # broken out of conjure.tech
+│   │   └── CLAUDE.md
+│   ├── conjure_weddings/         # future product
+│   │   └── CLAUDE.md
+│   └── shared/                   # only when something genuinely re-used; not now
+├── ops/                          # source of truth for ordering/tracking/xlsx/glb
 │   ├── CLAUDE.md
-│   └── mock-script/
-│       └── run.py
-├── spikes/
+│   ├── orders/                   # references R2 objects by hash
+│   │   ├── manifest.json
+│   │   └── tracker.md
+│   └── tests/
+├── spikes/                       # per-developer subfolders: spikes/<user>/<topic>/
 │   ├── CLAUDE.md
-│   └── mock-spike/README.md
+│   └── <user>/<topic>/...
 └── docs/
     ├── README.md
     ├── company/principles.md
@@ -51,7 +55,109 @@ test-subrepo-cicd/
 
 ---
 
-## What we're testing — user stories
+## Augmentations (post first-pass Q&A)
+
+The original plan was right on the mechanics but underspecified some product decisions. The clarifications below modify or extend it. Each ends with the user stories it adds (US-21 onwards) so they fit into the same matrix as US-1..US-20.
+
+### A. Tier taxonomy under `prod/`
+
+`prod/` is *not* a single application — it's a flat namespace of products. Each product owns its own folder, its own `make test`, its own CODEOWNERS line.
+
+- `prod/conjure_tech/` — current `conjure.tech` minus analytics. (Was called `prod/conjure` in the first sketch; renamed for clarity.)
+- `prod/analytics/` — the analytics product, broken out of `conjure_tech`.
+- `prod/conjure_weddings/` — the weddings product. Greenfield-able without touching the others.
+- `prod/shared/` — *only* when code is genuinely re-used across products. Not on the immediate plan.
+
+**Implication for CI:** every `prod/<product>/` is a leaf with its own test target. Root `make test` delegates per-product based on touched files. `prod-ci / ci-gate` becomes a per-product matrix (or per-product workflow), not one global gate.
+
+### B. `docs/` is *not* throwaway — it gets two-layer protection
+
+The first-pass plan put `docs/` in the spikes-smoke bucket. That's wrong: docs drift is the actual failure mode we're trying to prevent.
+
+- **Layer 1 (sanity-check on every PR):** a workflow gate that runs a Claude agent over `docs/**` diffs. Prompt: "did this PR delete or massively rewrite docs in a way that looks accidental?" Output: pass / human-review-required. Cheap, fast, blocks obvious mistakes (e.g. accidentally `rm -rf docs/architecture/`).
+- **Layer 2 (drift detection):** a workflow that, for each PR, runs Claude Code as a dispatcher — it reads the diff, decides which `docs/` sections plausibly describe the changed code, and fans out subagents to read each section and check it still describes reality. Output: comments on the PR listing concrete drift findings. Doesn't block merge by default; can be promoted to a required check later.
+
+Both live as their own workflow files (`docs-sanity.yml`, `docs-drift.yml`) and are wired into the ruleset's required-status-checks list once stable. Design note: `docs/agents/docs-protection.md`.
+
+### C. Source-of-truth for testing orders / xlsx / model files = `ops/`, binaries in R2
+
+The plan had a fuzzy spot around "where does the orders xlsx + .glb live". Decision:
+
+- All ordering logic, tracking scripts, tests, and the human-readable index live under `ops/` (e.g. `ops/orders/`).
+- `ops/orders/manifest.json` pins each binary asset (xlsx, glb, etc.) by **content hash**.
+- The binaries themselves live in **Cloudflare R2** (the existing `conjure-artifacts` bucket or a sibling). The git repo stores only the manifest.
+- Access pattern: **write/read only**. The R2 token used by code, CI, and any LLM agent has *no Delete permission*. Hard accidents (e.g. an agent calling `aws s3 rm`) can't destroy the artifact set.
+- `docs/orders.md` becomes a pointer ("the source of truth is `ops/orders/`") — no duplicated metadata.
+
+### D. CODEOWNERS rationale (clarification, not a change)
+
+CODEOWNERS isn't there to "read all prod code." It's the *mechanism* we picked for two unrelated jobs:
+1. **Required-PR gating** (`require_code_owner_review: true` with `count = 0`) — engages only on paths a code-owner matches.
+2. **The AI-cannot-merge trick** — the `ai-cannot-approve` workflow combined with codeowner-required review means a bot-account approval can never satisfy the gate.
+
+If a tier doesn't need either, it doesn't need a CODEOWNERS line.
+
+### E. Spikes — collision behaviour (the Q5 deep-dive)
+
+The concern: "person A has folder `spikes/X` with 10 uncommitted files; person B deletes folder `spikes/X` in a merged PR; A pulls. Do A's uncommitted files survive?"
+
+**Empirically verified** on a throwaway repo (script in `_research/git-folder-collision.sh`):
+
+| Alice's local state | `git pull` outcome | Result |
+|---|---|---|
+| Only **untracked** files in the folder | succeeds (fast-forward) | folder kept, untracked files survive, the deleted tracked files are gone |
+| **Modified tracked** + untracked files | **refused** with *"Your local changes to the following files would be overwritten by merge"* | nothing changes |
+| **Staged-but-uncommitted** new files | succeeds | staged file survives, tracked files removed |
+| Any of the above + then runs `git clean -fd` | (after pull) | **untracked files are obliterated** — only real risk path |
+
+**Linux mechanics:** git does not `rm -rf` the folder. It calls `unlink()` per tracked file and `rmdir()` on the directory; `rmdir` silently fails if untracked content remains. There is no kernel-level concern about "unlinking a folder with files" — `rmdir` returns `ENOTEMPTY` in that case, which is exactly the protection we want.
+
+**Therefore the actual risks for spikes:**
+
+1. **`git clean -fd`** wipes untracked content. Mitigation: convention — never run it without `git clean -nd` first to preview. Add to `CLAUDE.md` as a hard rule for any agent operating in this repo.
+2. **A coworker's PR deletes your spike folder** — git pull won't lose your work, but you might not notice. Mitigation: put spikes under `spikes/<user>/<topic>/` so deletions are author-scoped; codeowner the spike-root (`spikes/*/ @author-of-that-spike`) so no one accidentally deletes a peer's spike folder without their review.
+3. **Force-push to a shared spike branch** can rewrite history, dropping commits. Mitigation: spikes still get their own branches; force-push is allowed because spike branches aren't protected.
+
+### F. Large-file enforcement
+
+Files > 2 MB that aren't routed through LFS via `.gitattributes` are rejected at commit by `check-added-large-files`. CI re-runs the same check on every PR. An admin can override in the UI (bypass-actor on the ruleset, used sparingly) — but the default path is "add an LFS pattern, recommit". This was already validated as US-11; restated here as a *policy*, not a "test".
+
+### G. `make test` is project-aware (not a wrapper that runs everything)
+
+Each `prod/<product>/` has a `Makefile` with `make test`, `make lint`, `make typecheck`. The root `Makefile` is a *dispatcher*: given the changed-paths set (from CI's `dorny/paths-filter`), it runs the matching targets in parallel. CI calls `make test PATHS="$CHANGED"`; locally a developer can call `make test` from a product folder and only test that product.
+
+### H. Worktrees — not prod-only
+
+Worktrees work fine across the whole repo. The first-pass plan said "worktrees are prod-only by design"; what it meant was "we expect worktrees to be used *primarily* for prod work because prod is where multi-day, multi-branch changes happen". No actual restriction. Spikes and ops can use worktrees too. Remove the prod-only language.
+
+### I. AI review pipeline — replace `claude-ai-review`
+
+The hosted `claude-ai-review` GitHub App auto-disables itself periodically (rate-limited, billing, etc.) and we don't control it. Replace with three controlled pieces:
+
+1. **CodeRabbit** as the front-line, fast, broad reviewer — style, `CLAUDE.md` compliance, obvious issues. Praised as reliable and is the cheaper layer.
+2. **Claude Code via a bot account** for deep review — invoked from a workflow with `GITHUB_TOKEN` or a dedicated bot PAT. Reads the diff, the relevant `CLAUDE.md` chain, and the linked architecture docs. Posts findings as PR comments. (Same product family as our local Claude Code, run headless.)
+3. **Claude Code + Chrome MCP** for end-to-end journey tests on a deployed preview — drives the UI like a user would, reports concrete failures. Zero-setup-effort according to today's experiment.
+
+Design note: `docs/agents/ai-review-pipeline.md`.
+
+### Added user stories
+
+| # | Story | Mechanism |
+|---|---|---|
+| US-21 | A PR that deletes ≥ 20 docs files is flagged by `docs-sanity` workflow | Layer 1 docs protection |
+| US-22 | A code-only PR that contradicts its sibling doc gets a drift comment from `docs-drift` workflow | Layer 2 docs protection |
+| US-23 | Asset reference in `ops/orders/manifest.json` resolves to an existing R2 object | R2 hash-pin + fetch script |
+| US-24 | The R2 token configured in CI cannot delete objects (Delete returns 403) | scoped IAM policy |
+| US-25 | Alice's untracked files in `spikes/alice/X/` survive a `git pull` that deletes `spikes/alice/X/` | empirically verified above |
+| US-26 | Every `prod/<product>/` has its own `make test` that runs *only* that product's tests | per-product Makefile |
+| US-27 | Root `make test PATHS=...` dispatches correctly given a changed-paths set | dispatcher Makefile |
+| US-28 | CodeRabbit posts review comments on every PR within ≤ 5 min | CodeRabbit GitHub App |
+| US-29 | Claude-Code-bot review comments appear on PRs touching `prod/**` | bot workflow |
+| US-30 | Chrome MCP journey-test workflow finds a regression on a known-broken preview | Chrome MCP + Claude Code |
+
+These slot into the existing matrix; verdicts will be filled in as each is built.
+
+---
 
 | # | Story | Mechanism |
 |---|---|---|
