@@ -57,12 +57,12 @@ test-subrepo-cicd/
 |---|---|---|
 | US-1 | Force-push to `main` is rejected on every tier | branch ruleset |
 | US-2 | Merge commits to `main` are rejected (linear history) | branch ruleset |
-| US-3 | Push to `spikes/foo` directly on `main` succeeds (no PR required) | branch ruleset path scope |
-| US-4 | PR touching `prod/` requires CODEOWNER review | CODEOWNERS + ruleset |
-| US-5 | PR touching only `spikes/` does **not** require review or pass CI | path-filtered required checks |
-| US-6 | PR touching both `prod/` and `spikes/` is governed by prod rules | "strictest tier touched" |
-| US-7 | `prod-ci / ci-gate` reports **success** when no `prod/**` paths changed | skipped-as-success gate |
-| US-8 | Author can self-approve their own prod PR if they are a CODEOWNER | ruleset config |
+| ~~US-3~~ | ~~Push to `spikes/foo` directly on `main` succeeds (no PR required)~~ | **dropped** — rulesets aren't path-scoped; all paths now go through PRs |
+| US-4 | PR touching `prod/` requires CODEOWNER review | CODEOWNERS + ruleset (`count=0 + codeowner=true`) |
+| US-5 | PR touching only `spikes/` does **not** require review | natively works under `count=0 + codeowner=true`: the rule has nothing to fire on |
+| US-6 | PR touching both `prod/` and `spikes/` is governed by prod rules | "strictest tier touched" via CODEOWNERS pattern match |
+| US-7 | `prod-ci / ci-gate` reports **success** when no `prod/**` paths changed | skipped-as-success gate (inner `dorny/paths-filter`, not top-level `paths:`) |
+| US-8 | Author can merge their own prod PR once required checks pass | works when author is the sole CODEOWNER of touched paths (rule no-ops); for multi-codeowner paths a peer approves. **NOT** literal self-approval — GitHub blocks that at the API. |
 | US-9 | Pre-commit fast stage runs on every commit, every tier | `.pre-commit-config.yaml` |
 | US-10 | Pre-commit heavy stage runs only on prod paths | `files:` scoping in pre-commit |
 | US-11 | A 2 MB file with no LFS pattern is rejected at commit time | `check-added-large-files` |
@@ -87,13 +87,13 @@ Stretch (cost/time-bound, not blocking validation):
 | US | Action |
 |---|---|
 | US-1 | `git push --force-with-lease origin main` from a clean clone. Expect rejection. |
-| US-2 | Open a PR with a merge commit in its history; try to merge via "Create a merge commit". Expect blocked. |
-| US-3 | `echo x >> spikes/mock-spike/README.md && git commit -am x && git push origin main`. Expect success. |
-| US-4 | PR editing `prod/mock-app/frontend/index.js` from a feature branch. Expect "Review required" badge. |
-| US-5 | PR editing only `spikes/mock-spike/README.md`. Expect merge button green without review. |
+| US-2 | Open a PR with a merge commit in its history; try to merge via "Create a merge commit". Expect blocked. (Also: any direct push to `main` is rejected with *"Changes must be made through a pull request"*.) |
+| ~~US-3~~ | ~~Direct push of spike change to main~~. **Dropped:** GitHub rulesets are per-branch, not per-path. All work goes through PRs. |
+| US-4 | PR editing `prod/mock-app/frontend/index.js` from a feature branch with author ≠ codeowner. Expect "Review required" badge. |
+| US-5 | PR editing only `spikes/mock-spike/README.md`. Expect merge button green without review (codeowner rule has no codeowner files to gate on). |
 | US-6 | PR editing one file in each of `prod/`, `spikes/`. Expect prod review required. |
 | US-7 | Same as US-5. Expect `prod-ci / ci-gate` to appear as a green check (skipped-as-success), not "expected"/"missing". |
-| US-8 | As CODEOWNER, open a PR, "Approve" own PR (GitHub allows this if branch protection permits). Merge. Expect success. |
+| US-8 | As the sole CODEOWNER (or any user when no other reviewer is possible), open a prod PR. Once required checks pass, click Merge. Expect success — the codeowner rule silently no-ops. **DO NOT** try to literally Approve your own PR; the GraphQL API returns `Review — Can not approve your own pull request`. |
 | US-9 | Commit a file with trailing whitespace. Expect local pre-commit failure. |
 | US-10 | Commit a Python file under `ops/`. Expect ruff to NOT run. Commit one under `prod/`. Expect ruff to run. |
 | US-11 | `dd if=/dev/urandom of=prod/mock-app/blob.bin bs=1M count=2 && git add … && git commit`. Expect block. |
@@ -133,7 +133,8 @@ In GitHub UI: Settings → Rules → Rulesets → New ruleset for `main`:
 - ✅ Restrict deletions
 - ✅ Require linear history
 - ✅ Block force pushes
-- ❌ Require a PR (this kicks in via path-scoped required checks instead)
+- ✅ Require a PR before merging — **Required approvals: 0**, **Require review from Code Owners: ON** (this is the cleanest combo; details below)
+- ✅ Require status checks to pass — pin `ci-gate`, `ops-gate`, `pass` (and any future workflow gates) as required contexts
 
 Capture the JSON via `gh api repos/ronaldluc/test-subrepo-cicd/rulesets > docs/agents/branch-protection.json` so the config is in code.
 
@@ -141,10 +142,11 @@ Capture the JSON via `gh api repos/ronaldluc/test-subrepo-cicd/rulesets > docs/a
 
 ### Layer 2 — Path-scoped CI + skipped-as-success gate
 
-Three workflows, each with `paths:` filters AND a final aggregator job that uses `if: always()` and returns success if all needed jobs are `success` OR `skipped`. Mark `prod-ci / ci-gate`, `ops-ci / ops-gate`, and `pre-commit-fast / pass` as **required status checks** in the ruleset.
+Three workflows, each starting **always** with an inner `dorny/paths-filter` job that decides whether downstream jobs do real work or skip. A final aggregator job uses `if: always()` and exits success if all needed jobs are `success` OR `skipped`. Mark `prod-ci / ci-gate`, `ops-ci / ops-gate`, and `pre-commit-fast / pass` as **required status checks** in the ruleset.
 
-**Test US-3:** push to `main` editing only a spike file → green required checks via skipped-as-success. Direct push allowed because no PR-required rule.
-**Test US-5, US-7:** PR with only spike changes. Required checks turn green via skip. Merge button enables.
+> **Gotcha (learned the hard way):** top-level `on: pull_request: paths:` filters make the workflow not even start on non-matching paths, so the required check shows up as *"expected / missing"* and PRs are stuck forever. Put the path filter inside an inner job; the workflow always runs, the gate always reports.
+
+**Test US-5, US-7:** PR with only spike changes. Required checks turn green via skip. Merge button enables. (Direct push to `main` is rejected by the ruleset, so US-3 is dropped — see the user-story table.)
 
 ### Layer 3 — CODEOWNERS
 
@@ -154,7 +156,13 @@ prod/**     @ronaldluc
 docs/agents/** @ronaldluc
 ```
 
-In the ruleset: ✅ Require pull request before merging → ✅ Require review from Code Owners (for the `prod/**` and `.github/**` matchers — done by enabling "Require approval of the most recent reviewable push" with code owner enforcement).
+In the ruleset (set under Layer 1):
+- ✅ Require pull request before merging
+- **Required approvals: 0** (not 1)
+- ✅ Require review from Code Owners
+- ❌ Require approval of the most recent reviewable push (leave off so the author can still merge after pushing)
+
+**Why `count = 0` + `codeowner = true`:** with `count = 1`, *every* PR would need a review, breaking US-5. With `count = 0` + codeowner enforcement, GitHub only blocks PRs that touch codeowner-matched files **and** have no approving review from a codeowner who isn't the author. PRs that don't touch codeowner files merge straight through (US-5). PRs that touch them and have other codeowners need that peer approval (US-4, US-6). PRs where the author is the **sole** codeowner of all touched paths merge silently because no valid reviewer exists (US-8).
 
 **Test US-4, US-6, US-8.**
 
@@ -313,11 +321,13 @@ These get re-tested at migration time, against the real monorepo. Document each 
 
 The sandbox is "validated" when:
 
-- [ ] All US-1 through US-19 produce the expected outcome at least once.
-- [ ] US-20 Step A passes (Step B optional in sandbox).
-- [ ] The branch ruleset JSON is committed at `docs/agents/branch-protection.json`.
-- [ ] Each layer's test commands are captured in `docs/agents/test-log.md` with screenshots/output snippets for any non-obvious behavior.
-- [ ] Any deviation from the migration plan is fed back to `conjurehq/spikes/spikes/monorepo-migration/README.md` as a "lessons learned" appendix.
+- [x] US-1, US-2, US-4, US-5, US-6, US-7, US-8 (sole-codeowner pattern), US-9–US-14, US-17–US-19 produce the expected outcome.
+- [x] US-3 dropped from scope (rulesets aren't path-scoped; not worth a workflow gate for the ~30s saved per spike PR).
+- [x] US-8 wording fixed: GitHub blocks literal self-approval; the cleanest pattern is `count=0 + codeowner=true` + ≥ 1 codeowner per path (= author can merge when sole owner of touched paths).
+- [x] Branch ruleset JSON committed at `docs/agents/branch-protection.json`.
+- [ ] US-15, US-16 (Claude scope sentinels) — needs an interactive `claude` session at the relevant directory; deferred.
+- [ ] US-20 Step B (live bot review) — needs a real bot identity; defer to migration day.
+- See `results.html` for the final user-story matrix and `executive-summary.html` for the LFS-vs-R2 and CI-runner findings that came out of this validation.
 
 ---
 

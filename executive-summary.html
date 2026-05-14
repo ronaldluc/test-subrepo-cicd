@@ -66,7 +66,7 @@
   <div class="grid">
     <div class="card rec">
       <h3>1. Protection model</h3>
-      <p>The plan's <strong>US-3, US-5, and US-8</strong> are <em>incompatible with GitHub-native rulesets</em>. Rulesets are per-branch, not per-path; GitHub <strong>blocks self-approval at the API level</strong>. Either accept the tradeoff (all PRs need a review) or layer a workflow gate on top to do path-scoped enforcement.</p>
+      <p>One ruleset, <strong><code>required_approving_review_count = 0</code> + <code>require_code_owner_review = true</code></strong>, plus path-scoped required status checks that always run and skip-as-success. Empirically delivers <strong>US-4, US-5, US-6, US-7</strong>, and US-8 (in the form &ldquo;author merges when sole codeowner of touched paths&rdquo;). <strong>US-3 dropped</strong> &mdash; rulesets aren&rsquo;t path-scoped, all paths go through PRs.</p>
     </div>
     <div class="card rec">
       <h3>2. Binary assets</h3>
@@ -79,57 +79,54 @@
   </div>
 
   <!-- ====================================================== -->
-  <h2 id="protection">1. Per-path protection — what actually works on GitHub</h2>
-  <p>The validation pass exercised all 20 user stories from <code>README.md</code>. <strong>13 cleanly pass</strong>, <strong>3 have caveats specific to this PAT or sandbox</strong>, and <strong>3 reveal a plan-vs-platform mismatch</strong> that needs a design decision.</p>
+  <h2 id="protection">1. Per-path protection &mdash; the final shape</h2>
+  <p>The validation exercised all 20 user stories. <strong>15 pass</strong> under the recommended ruleset; <strong>US-3 dropped</strong> as out-of-scope; two need a live <code>claude</code> session to verify; US-20 is workflow-logic verified but needs a bot identity to live-fire. The earlier &ldquo;US-3 / US-4 / US-5 / US-8 are all plan-vs-platform mismatches&rdquo; reading was wrong &mdash; an artifact of testing with the PR author as the only CODEOWNER.</p>
 
   <div class="stats">
     <div class="stat"><div class="n">20</div><div class="l">user stories</div></div>
-    <div class="stat"><div class="n" style="color:var(--ok)">13</div><div class="l">pass</div></div>
-    <div class="stat"><div class="n" style="color:var(--warn)">3</div><div class="l">caveat</div></div>
-    <div class="stat"><div class="n" style="color:var(--bad)">3</div><div class="l">plan mismatch</div></div>
+    <div class="stat"><div class="n" style="color:var(--ok)">15</div><div class="l">pass</div></div>
+    <div class="stat"><div class="n" style="color:var(--warn)">1</div><div class="l">dropped (US-3)</div></div>
+    <div class="stat"><div class="n" style="color:var(--bad)">0</div><div class="l">plan mismatch</div></div>
+    <div class="stat"><div class="n">2</div><div class="l">needs claude session</div></div>
     <div class="stat"><div class="n">1</div><div class="l">logic-only (US-20)</div></div>
   </div>
 
-  <h3>The three plan-vs-GitHub mismatches</h3>
-  <div class="card bad">
-    <h3>US-8 &mdash; self-approval is not a configurable thing <span class="pill bad">plan wrong</span></h3>
-    <p>Quote from the GraphQL API when attempting it on PR #4:</p>
-    <pre>Review &mdash; Can not approve your own pull request</pre>
-    <p>GitHub blocks self-approval at the platform level. No ruleset/branch-protection setting can override this. If a single CODEOWNER must ship prod changes alone, the workflow is: (a) bypass the rule via a bypass actor, (b) get a second collaborator with code-owner status, or (c) move review enforcement entirely into a workflow check.</p>
-  </div>
-  <div class="card warn">
-    <h3>US-3 vs US-5 &mdash; rulesets aren't path-scoped <span class="pill warn">choose one</span></h3>
-    <p>The plan wants <em>spike-only changes to push directly to main</em> (US-3) AND <em>spike-only PRs to need no review</em> (US-5) AND <em>prod PRs to require CODEOWNER review</em> (US-4). With a single GitHub ruleset:</p>
-    <ul>
-      <li><code>required_approving_review_count: 0</code> + <code>require_code_owner_review: true</code>: PR&nbsp;#3 (prod-only) merged with <em>no review</em>. CODEOWNERS is not enforced when the count is 0. <span class="pill bad">US-4 fails</span></li>
-      <li><code>required_approving_review_count: 1</code> + <code>require_code_owner_review: true</code>: PR&nbsp;#2 (spike-only) shows <em>REVIEW_REQUIRED</em>. <span class="pill bad">US-5 fails</span></li>
-      <li>Either setting blocks direct push to <code>main</code> for all paths. <span class="pill bad">US-3 fails</span></li>
-    </ul>
-    <p><strong>Resolution:</strong> add a workflow check named e.g. <code>codeowner-required</code> that <em>only fires when prod paths change</em>, fails if no code-owner approval is present, and is itself a required status check. That gives path-scoped review enforcement without ruleset gymnastics. Either accept the simpler "all PRs need a review" or invest in this workflow.</p>
-  </div>
+  <h3>The recommended config</h3>
+  <pre>name: main-protection
+target: branch
+bypass_actors: []
+rules:
+  - deletion
+  - non_fast_forward
+  - required_linear_history
+  - required_status_checks: [ci-gate, ops-gate, pass, &lt;more path-scoped checks&gt;]
+  - pull_request:
+      required_approving_review_count: 0
+      require_code_owner_review: true
+      require_last_push_approval: false
+      allowed_merge_methods: [squash, rebase]</pre>
+  <p>Why <code>count = 0</code> + <code>codeowner = true</code>: with count &ge; 1, every PR (spike included) needs a review &rarr; US-5 breaks. With count = 0, GitHub gates only on the codeowner rule, which fires only when codeowner-matched paths are in the diff. Spike-only PRs sail through. Prod-touching PRs need a peer codeowner. PRs where the author is the only codeowner of all touched paths merge through silently because no valid reviewer exists &mdash; that&rsquo;s how the author-merges-own-prod-PR pattern works without literal self-approval.</p>
 
-  <h3>Stories that <em>did</em> pass cleanly under enforcement</h3>
+  <h3>The codeowner-isolation experiment</h3>
+  <p>Two test PRs under the recommended ruleset, with CODEOWNERS temporarily pointing at <code>@octocat</code> so the codeowner is not the author:</p>
   <table>
-    <thead><tr><th>US</th><th>What</th><th>Evidence</th></tr></thead>
+    <thead><tr><th>PR</th><th>Touches</th><th>Codeowner match?</th><th>Outcome</th></tr></thead>
     <tbody>
-      <tr><td>US-1</td><td>Force-push to main rejected</td><td><code>remote: - Cannot force-push to this branch</code></td></tr>
-      <tr><td>US-2</td><td>Linear history enforced (no merge commits)</td><td>Same push attempt: <em>"Changes must be made through a pull request"</em></td></tr>
-      <tr><td>US-7</td><td>ci-gate = success when prod skipped</td><td>PR #2 (spike-only): <code>prod-ci / lint: SKIPPED</code>, <code>prod-ci / ci-gate: SUCCESS</code></td></tr>
-      <tr><td>US-9 &mdash; US-14</td><td>Pre-commit / large-file rejection / LFS round-trip</td><td>All local. <code>clip.mp4</code>: 5,242,880 B with <code>lfs:true</code> vs 132 B pointer without. Tested on fresh clone.</td></tr>
-      <tr><td>US-17 &mdash; US-18</td><td>AGENTS.md symlinks + missing-symlink guard</td><td>Git mode 120000; hook exits 1 on missing, 0 after restore.</td></tr>
-      <tr><td>US-19</td><td>Dependabot PR for prod, none for spikes</td><td>PR #1 (lodash 4.17.0 &rarr; 4.18.1) opened within minutes &mdash; not the 24h budget the plan assumed.</td></tr>
+      <tr><td>#6 <code>chore/codeowners-test</code></td><td><code>.github/CODEOWNERS</code></td><td>Yes</td><td><span class="pill bad">blocked</span> &mdash; &ldquo;the base branch policy prohibits the merge&rdquo;</td></tr>
+      <tr><td>#7 <code>chore/codeowners-author-test</code></td><td><code>spikes/mock-spike/README.md</code></td><td>No</td><td><span class="pill ok">merged with zero reviews</span></td></tr>
     </tbody>
   </table>
+  <p>Then with CODEOWNERS back to <code>@ronaldluc</code> and author = sole codeowner: PR&nbsp;#9 touched <code>prod/mock-app/frontend/index.js</code> and <code>gh pr merge 9 --squash</code> succeeded with no flags. The codeowner rule silently no-ops when there&rsquo;s no valid reviewer other than the author. ✅</p>
 
-  <h3>The CI workflow gotcha we hit and fixed</h3>
-  <p>The plan's "skipped-as-success gate via <code>if: always()</code>" works <em>only</em> when the workflow itself always starts. Top-level <code>on: pull_request: paths: [prod/**]</code> makes the workflow not trigger at all when only spikes change, and the required check appears <em>"expected / missing"</em> forever &mdash; PR stuck. <strong>Fix:</strong> move the path filter into an inner job (we used <code>dorny/paths-filter</code>). Required-check enforcement is now compatible with path-scoped CI.</p>
-
-  <h3>What still needs you in the GitHub UI</h3>
-  <p>Two operations the user did manually (and that the PAT can't fully automate):</p>
+  <h3>Three things still don&rsquo;t fit natively (and that&rsquo;s OK)</h3>
   <ol>
-    <li>Initial ruleset name/structure &mdash; created the <code>no_force_push</code> ruleset, which I extended via API. Re-creating from scratch via API needs the <code>Administration: write</code> scope that you already granted.</li>
-    <li><strong>US-20 Step B (bot review test):</strong> requires installing a GitHub App or scripting a workflow that submits an approval via <code>GITHUB_TOKEN</code> (a bot identity), so the <code>ai-cannot-approve</code> workflow can fire and fail. Defer to migration time.</li>
+    <li><strong>US-3 (direct push to main for one path tier)</strong> &mdash; rulesets are per-branch. Dropped from scope; ~30s per spike PR is fine.</li>
+    <li><strong>US-8 as literally worded (&ldquo;author self-approves&rdquo;)</strong> &mdash; GitHub blocks <code>addPullRequestReview</code> with <em>&ldquo;Can not approve your own pull request&rdquo;</em>. The <em>intent</em> (author can ship their own prod change) is preserved by the sole-codeowner mechanism above.</li>
+    <li><strong>UI-only merge enforcement</strong> &mdash; GitHub&rsquo;s web UI and <code>gh pr merge</code> hit the same endpoint. No native way to allow one and forbid the other. Treat as policy.</li>
   </ol>
+
+  <h3>CI workflow gotcha (still relevant)</h3>
+  <p>Top-level <code>on: pull_request: paths: [prod/**]</code> makes the workflow not trigger when only non-matching paths change &mdash; the required check then shows <em>&ldquo;expected / missing&rdquo;</em> forever and PRs stick. <strong>Fix:</strong> the workflow always starts; the path filter is an inner job (<code>dorny/paths-filter</code>); the gate job uses <code>if: always()</code> to report skip-as-success.</p>
 
   <!-- ====================================================== -->
   <h2 id="lfs">2. Git LFS vs Cloudflare R2 &mdash; pricing &amp; fit</h2>
@@ -273,7 +270,7 @@
   <!-- ====================================================== -->
   <h2 id="recs">Combined recommendation for conjure</h2>
   <ol>
-    <li><strong>Protection:</strong> ship the ruleset with <code>required_approving_review_count: 1 + require_code_owner_review: true</code> and accept that spike PRs need a review too. If "spikes don't need review" is non-negotiable, add a workflow gate (<code>codeowner-required.yml</code>) that fires only when CODEOWNERS-matched paths are touched and is itself a required check. Drop US-8 from the goal list &mdash; GitHub blocks self-approval and that's by design.</li>
+    <li><strong>Protection:</strong> ship the ruleset with <code>required_approving_review_count: 0 + require_code_owner_review: true</code>. Spike-only PRs sail through with no review (codeowner rule has nothing to fire on); prod-touching PRs need a peer codeowner; PRs where the author is the only codeowner of all touched paths merge silently (US-8 intent). Drop US-3 from scope (no path-scoped direct push); reword US-8 to &ldquo;author can merge own PR&rdquo; not &ldquo;author can self-approve&rdquo; (GitHub blocks the latter at the API).</li>
     <li><strong>Assets:</strong> route net-new binary content (training data, ML weights, large media) through the existing <code>conjure-artifacts</code> R2 bucket &mdash; pin by hash in a tracked manifest. Keep Git LFS only for asset categories where commit-coupled history genuinely matters and total volume stays &lt; 1 data pack.</li>
     <li><strong>Compute:</strong> migrate to <strong>Blacksmith</strong> as the default runner (one-line label swap). Cost +speed both improve; activation energy is one PR. If/when CI bill exceeds ~$200/mo or compliance becomes a concern, evaluate <strong>RunsOn-in-our-AWS</strong> as the next hop. Add Depot for the Docker step only if image builds are &gt;30% of pipeline wall-time.</li>
   </ol>
