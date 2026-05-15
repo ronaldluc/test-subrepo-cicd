@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Per-path monorepo protection — from first principles</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root {
+      --bg: #fafaf7; --fg: #1a1a1a; --muted: #666;
+      --pass: #137a3e; --warn: #b06a00; --bad: #b8302b;
+      --note: #234e8a; --line: #d8d8d4; --code-bg: #efeee8;
+      --card-bg: white; --accent: #234e8a;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; }
+    main { max-width: 880px; margin: 0 auto; padding: 32px 24px 80px; }
+    h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.02em; }
+    h2 { font-size: 22px; margin: 40px 0 12px; padding-bottom: 8px; border-bottom: 2px solid var(--line); letter-spacing: -0.01em; }
+    h3 { font-size: 17px; margin: 22px 0 6px; color: var(--accent); }
+    h4 { font-size: 15px; margin: 14px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+    p.lede { color: var(--muted); margin: 0 0 24px; font-size: 17px; }
+    code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); border-radius: 3px; }
+    code { padding: 1px 5px; font-size: 13px; }
+    pre { padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+    a { color: var(--note); }
+    .layer { background: var(--card-bg); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; padding: 14px 20px; margin: 18px 0; }
+    .layer h3 { margin-top: 4px; color: inherit; }
+    .layer .stack { font-size: 13px; color: var(--muted); margin: 4px 0 12px; font-style: italic; }
+    .layer .satisfies { font-size: 13px; color: var(--pass); margin-top: 8px; font-weight: 600; }
+    dl.terms { margin: 8px 0; }
+    dl.terms dt { font-weight: 600; margin-top: 10px; color: var(--accent); }
+    dl.terms dd { margin: 2px 0 0 24px; color: var(--fg); }
+    .misc { background: #fff3df; border-left: 4px solid var(--warn); border-radius: 4px; padding: 10px 16px; margin: 10px 0; }
+    .misc strong.no { color: var(--bad); }
+    .misc strong.yes { color: var(--pass); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { background: white; font-weight: 600; }
+    .summary { background: #e6f6ec; border: 1px solid #9bcdb1; border-radius: 8px; padding: 16px 22px; margin: 28px 0; }
+    .summary ol { margin: 8px 0 0; padding-left: 22px; }
+    .summary li { margin: 8px 0; }
+    .nav { font-size: 13px; color: var(--muted); margin: 8px 0 28px; }
+    .nav a { margin-right: 12px; }
+    footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 18px; }
+  </style>
+</head>
+<body>
+<main>
+
+<h1>Per-path monorepo protection &mdash; from first principles</h1>
+<p class="lede">The plan from the bottom up: each protective behaviour we&rsquo;re after is a stack of primitive mechanisms. This page names every primitive once, shows what it lets us build, and only at the end zooms out to mental model and use cases.</p>
+
+<nav class="nav">
+  <a href="#terms">Terms</a>
+  <a href="#l0">L0&nbsp;git</a>
+  <a href="#l1">L1&nbsp;refs</a>
+  <a href="#l2">L2&nbsp;workflows</a>
+  <a href="#l3">L3&nbsp;PR&nbsp;objects</a>
+  <a href="#l4">L4&nbsp;codeowners</a>
+  <a href="#l5">L5&nbsp;pre-commit</a>
+  <a href="#l6">L6&nbsp;R2&nbsp;assets</a>
+  <a href="#l7">L7&nbsp;agents</a>
+  <a href="#l8">L8&nbsp;bots</a>
+  <a href="#l9">L9&nbsp;docs</a>
+  <a href="#model">Mental model</a>
+  <a href="#use">Real use</a>
+  <a href="#misc">Misconceptions</a>
+  <a href="#tldr">Summary</a>
+</nav>
+
+<h2 id="terms">Terminology</h2>
+<dl class="terms">
+  <dt>git object store</dt>
+  <dd>A content-addressed key-value store on disk. Keys are SHA-1 hashes. Values are blobs (file content), trees (directory listings), commits, and tags. Identical content has identical key.</dd>
+
+  <dt>ref</dt>
+  <dd>A named mutable pointer to a commit SHA. <code>refs/heads/main</code>, <code>refs/heads/feature/x</code>, etc. A branch is just a ref under <code>refs/heads/</code>.</dd>
+
+  <dt>working tree</dt>
+  <dd>The set of files on disk in your checkout. Distinct from the object store. <em>Untracked files</em> live in the working tree without ever entering the object store.</dd>
+
+  <dt>protected ref / ruleset</dt>
+  <dd>A server-side policy that constrains <em>how</em> a ref may move. Lives on the GitHub side, not in the repo&rsquo;s objects. Enforced by GitHub&rsquo;s push receiver.</dd>
+
+  <dt>commit status</dt>
+  <dd>A named (context, state, target_url) tuple attached to a commit SHA by some external system. State is <code>success</code> / <code>failure</code> / <code>pending</code>. A ruleset can require named contexts to be <code>success</code> before a ref can advance to that SHA.</dd>
+
+  <dt>workflow</dt>
+  <dd>A YAML file under <code>.github/workflows/</code> that GitHub Actions executes on certain events. Jobs in a workflow publish commit statuses.</dd>
+
+  <dt>pull request</dt>
+  <dd>A GitHub object (not a git object) describing a proposed advance of one ref by N commits. Has its own review state, status-check rollup, and merge button.</dd>
+
+  <dt>CODEOWNERS</dt>
+  <dd>A file at <code>.github/CODEOWNERS</code> mapping glob patterns to GitHub user/team handles. Read by GitHub when a PR&rsquo;s diff is evaluated against rulesets.</dd>
+
+  <dt>R2 bucket / S3-compatible object store</dt>
+  <dd>Cloudflare&rsquo;s object storage. Same API surface as AWS S3, distinct billing (zero egress). For this plan: bucket <code>conjure-ops</code>, scoped API token <code>conjure-rw-no-delete</code>, S3 endpoint URL filled in via <code>R2_OPS_ENDPOINT</code>.</dd>
+
+  <dt>asset manifest</dt>
+  <dd>A JSON file under <code>ops/</code> listing R2 objects by key + sha256. The repo stores the manifest; the binary content stays in R2. Fetcher (<code>scripts/ops-fetch.sh</code>) resolves manifest entries on demand and verifies hashes. Pattern lifted from <code>conjure_tech/scripts/fulfill-orders.py</code>.</dd>
+
+  <dt>no-delete IAM token</dt>
+  <dd>An R2 (S3) API token scoped to <em>Object Read &amp; Write</em> but not <em>Admin</em>. <code>DELETE</code> requests against the bucket return <strong>403 Forbidden</strong>. This is the single mechanical guard preventing code or an LLM from destroying the asset set.</dd>
+
+  <dt>pre-commit</dt>
+  <dd>A local-machine framework (and the name of one specific tool) that runs configured hooks before <code>git commit</code> writes anything. Configured by <code>.pre-commit-config.yaml</code>.</dd>
+
+  <dt>CLAUDE.md / @-include</dt>
+  <dd>A markdown file Claude Code loads as context when invoked from a directory. <code>@path/to/file.md</code> in a CLAUDE.md transcludes that file&rsquo;s content. Resolved by Claude Code at session start.</dd>
+
+  <dt>required status check (vs job)</dt>
+  <dd>The ruleset references a <em>context string</em> (e.g. <code>ci-gate</code>). That string must appear on the head commit as a status; it doesn&rsquo;t care which workflow or job produced it. A required context that <em>never appears</em> is treated as missing; the ref stays blocked.</dd>
+</dl>
+
+<h2 id="l0">L0 &mdash; What git itself does</h2>
+<p>Git tracks <em>content</em>, not files. <code>git add</code> writes blobs to the object store; <code>git commit</code> writes a tree pointing at those blobs plus a commit object pointing at the tree. Refs (branches) are then advanced to point at the new commit. None of this is networked &mdash; that&rsquo;s <code>git push</code>, which transfers objects to a remote and asks it to update its refs.</p>
+<p>Key invariant: <strong>git never modifies untracked files</strong>. Pull, checkout, merge, reset &mdash; all of them operate on tracked content. Untracked files are kept around unless something explicitly deletes them (<code>git clean</code>, <code>rm</code>, the OS). This is the basis for the spike-folder collision result later.</p>
+
+<h2 id="l1">L1 &mdash; Server-side ref protection</h2>
+<div class="layer">
+<h3>Primitive: ruleset on <code>main</code></h3>
+<div class="stack">Stack: GitHub ruleset object &rarr; ref-update receiver</div>
+<p>A ruleset is a JSON document that GitHub attaches to one or more refs. When a client tries to push, the receiver evaluates the proposed update against the ruleset and accepts or rejects.</p>
+<p>The four primitive rules we use:</p>
+<ul>
+  <li><code>deletion</code> &mdash; reject deletion of the ref.</li>
+  <li><code>non_fast_forward</code> &mdash; reject force-pushes (anything that doesn&rsquo;t cleanly extend the current commit).</li>
+  <li><code>required_linear_history</code> &mdash; the new commit must have one parent (no merge commits).</li>
+  <li><code>pull_request</code> &mdash; the ref can only advance via a PR merge, not a plain push. Has sub-knobs like <code>required_approving_review_count</code> and <code>require_code_owner_review</code>.</li>
+</ul>
+<p class="satisfies">Satisfies: US-1 (force-push rejected), US-2 (linear history).</p>
+</div>
+
+<h2 id="l2">L2 &mdash; Required status checks + workflows</h2>
+<div class="layer">
+<h3>Primitive: ruleset requires named contexts on the head commit</h3>
+<div class="stack">Stack: ruleset &rarr; commit status &larr; workflow job</div>
+<p>The ruleset has a <code>required_status_checks</code> rule listing context strings (e.g. <code>ci-gate</code>, <code>ops-gate</code>, <code>pass</code>). The ref-update receiver looks up commit-statuses on the head commit and refuses to advance if any required context isn&rsquo;t <code>success</code>.</p>
+<p>Workflows produce those statuses. A job named <code>ci-gate</code> in a workflow named <code>prod-ci</code> publishes a status with context <code>ci-gate</code> (or <code>prod-ci / ci-gate</code> &mdash; GitHub normalises this).</p>
+<h4>The path-filter trap</h4>
+<p>If a workflow is gated by <code>on: pull_request: paths: [prod/**]</code> at the top level and a PR touches only spikes, the workflow <em>never starts</em>. Its required-context status is never written. Required-context = <em>missing</em>. Ref stays blocked forever.</p>
+<p><strong>Fix:</strong> the workflow always starts. The first job (<code>changes</code>) uses <code>dorny/paths-filter</code> to set an output. Downstream jobs read that output and either do real work or short-circuit with <code>if: needs.changes.outputs.prod == 'true'</code>. The final aggregator job uses <code>if: always()</code> and reports <code>success</code> if its dependencies are <code>success</code> OR <code>skipped</code> &mdash; the &ldquo;skipped-as-success&rdquo; pattern.</p>
+<p class="satisfies">Satisfies: US-7 (gate green when no prod changes). Foundational for US-4, US-5, US-6.</p>
+</div>
+
+<h2 id="l3">L3 &mdash; Pull-request objects</h2>
+<div class="layer">
+<h3>Primitive: the <code>pull_request</code> ruleset rule</h3>
+<div class="stack">Stack: ruleset &rarr; PR object &rarr; merge button</div>
+<p>With <code>pull_request</code> in the ruleset, <em>no direct push</em> to <code>main</code> is accepted. Every advance of <code>main</code> must come from a PR&rsquo;s merge. This is a per-branch rule; it cannot be path-scoped (this is why US-3 was dropped).</p>
+<p>Sub-knobs:</p>
+<ul>
+  <li><code>required_approving_review_count: 0</code> &mdash; how many human approvals before merge. We set this to 0 deliberately.</li>
+  <li><code>require_code_owner_review: true</code> &mdash; the next layer; meaningful only when count is &ge; 0 and CODEOWNERS exists.</li>
+  <li><code>allowed_merge_methods: [squash, rebase]</code> &mdash; what kind of advance is allowed. Excludes merge commits (consistent with <code>required_linear_history</code>).</li>
+</ul>
+<p class="satisfies">Satisfies: US-2 (PR required); everything downstream that needs a PR object as the carrier (review, CI, doc-protection workflows).</p>
+</div>
+
+<h2 id="l4">L4 &mdash; CODEOWNERS as a path-scoped review gate</h2>
+<div class="layer">
+<h3>Primitive: glob &rarr; user/team mapping read at PR-eval time</h3>
+<div class="stack">Stack: <code>.github/CODEOWNERS</code> + <code>require_code_owner_review: true</code></div>
+<p>The CODEOWNERS file maps glob patterns to GitHub handles. When a PR is opened or updated, GitHub computes its diff against these globs. Every matching path requires an approving review from a designated owner who isn&rsquo;t the author.</p>
+<p>The non-obvious knob combination:</p>
+<table>
+  <thead><tr><th>count</th><th>codeowner=true</th><th>Behaviour</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>true</td><td>Every PR needs &ge; 1 approving review, codeowner-or-not. Breaks US-5.</td></tr>
+    <tr><td>0</td><td>false</td><td>No review required for anything. Breaks US-4.</td></tr>
+    <tr><td><strong>0</strong></td><td><strong>true</strong></td><td>No review needed when the diff doesn&rsquo;t match any codeowner glob. When it does, that codeowner must approve. <strong>Path-scoped enforcement from a single ruleset.</strong></td></tr>
+  </tbody>
+</table>
+<p>Edge case &mdash; the sole-codeowner trick: GitHub disallows self-approval. If the PR author is the <em>only</em> codeowner for every path their diff touches, no valid reviewer exists. GitHub silently treats the rule as satisfied. This is how US-8 works without literal self-approval.</p>
+<p class="satisfies">Satisfies: US-4 (prod PR needs codeowner review), US-5 (spike-only PR doesn&rsquo;t), US-6 (mixed PR governed by prod rules), US-8 (author merges own PR when sole owner of touched paths).</p>
+</div>
+
+<h2 id="l5">L5 &mdash; Pre-commit + large-file rejection</h2>
+<div class="layer">
+<h3>Primitive: client-side hook before <code>git commit</code></h3>
+<div class="stack">Stack: <code>.pre-commit-config.yaml</code> &rarr; pre-commit framework &rarr; <code>.git/hooks/pre-commit</code></div>
+<p>Pre-commit runs configured hooks against staged files before the commit is written. Hooks are themselves small programs (whitespace fixers, linters, secret detectors). A hook&rsquo;s non-zero exit aborts the commit; some hooks also modify files in place.</p>
+<p>Two stages:</p>
+<ul>
+  <li><strong>Fast stage</strong>, scope <code>all paths</code>: trailing whitespace, end-of-file fixer, YAML parser, large-file check (<code>--maxkb=1000</code>), gitleaks, private-key detector.</li>
+  <li><strong>Heavy stage</strong>, scope <code>files: ^prod/</code>: ruff lint + format. Only files under <code>prod/</code> are passed to these hooks.</li>
+</ul>
+<p>The same config is mirrored as a CI workflow (<code>pre-commit-fast.yml</code>) and pinned as a required status check (<code>pass</code>). Local pre-commit is convenience; CI is enforcement.</p>
+<p class="satisfies">Satisfies: US-9 (fast stage runs everywhere), US-10 (heavy stage scoped), US-11 (large file rejected at commit).</p>
+</div>
+
+<h2 id="l6">L6 &mdash; Binary assets via R2 (no LFS)</h2>
+<div class="layer">
+<h3>Primitive: out-of-git object store + in-git manifest</h3>
+<div class="stack">Stack: <code>ops/&hellip;/manifest.json</code> (in git) &rarr; <code>scripts/ops-fetch.sh</code> / <code>ops-push.sh</code> &rarr; <code>magic/storage/object_store.py</code> &rarr; R2 bucket <code>conjure-ops</code></div>
+<p>Git is not asked to track binary content. Each binary asset (xlsx, glb, mp4, model weights, fixtures) lives in R2, addressed by a stable key. A manifest file under <code>ops/&lt;category&gt;/manifest.json</code> lists every asset by key + sha256. The repo stores only the manifest.</p>
+<p>Two scripts wrap the existing object-store abstraction:</p>
+<ul>
+  <li><code>scripts/ops-push.sh</code> &mdash; upload a local file to R2, add it to the manifest, commit the manifest. <em>Never deletes existing entries.</em></li>
+  <li><code>scripts/ops-fetch.sh</code> &mdash; read the manifest, download each object to a gitignored location, verify sha256. Used in CI and locally.</li>
+</ul>
+<p>Why this not LFS: LFS bandwidth meters every clone and CI run; bills accumulate on forks; the deletion path is fragile. R2 has zero egress fees and a more native ACL model. Crucially the CI/agent IAM token has <strong>no Delete permission</strong> &mdash; the mechanical guard is much simpler than &ldquo;don&rsquo;t run <code>git lfs prune</code>&rdquo;.</p>
+<p>A daily workflow (<code>r2-no-delete-check.yml</code>) attempts to <code>aws s3 rm</code> a canary key with the CI credentials and asserts a 403. If the token ever drifts to having Delete permission, this canary fires.</p>
+<p class="satisfies">Satisfies: US-23 (manifest entry resolves to an existing object), US-24 (CI token cannot delete). US-12&ndash;US-14 (LFS-flavoured) are retired in this plan.</p>
+</div>
+
+<h2 id="l7">L7 &mdash; Agent context (CLAUDE.md hierarchy)</h2>
+<div class="layer">
+<h3>Primitive: directory-scoped markdown loaded by Claude Code at session start</h3>
+<div class="stack">Stack: <code>CLAUDE.md</code> at the working-directory + <code>@-include</code> resolution + parent-directory walking</div>
+<p>When Claude Code starts in a directory, it reads <code>CLAUDE.md</code> at that location and at every parent up to the repo root. Each file may contain <code>@path</code> lines that transclude another markdown file into the loaded context.</p>
+<p>The repo organises CLAUDE.mds so each tier loads only what it needs:</p>
+<ul>
+  <li><code>prod/conjure_tech/frontend/CLAUDE.md</code> @-includes <code>docs/architecture/frontend.md</code>.</li>
+  <li><code>prod/conjure_tech/backend/CLAUDE.md</code> @-includes <code>docs/architecture/backend.md</code>.</li>
+  <li><code>ops/CLAUDE.md</code> @-includes only <code>docs/company/principles.md</code>.</li>
+</ul>
+<p>Sentinel strings (<code>SENTINEL-FRONTEND-7A3B</code>, <code>SENTINEL-BACKEND-9F1C</code>) embedded in the architecture docs are how we test scope isolation: a frontend session should grep one but not the other.</p>
+<p class="satisfies">Satisfies: US-15, US-16 (scope isolation), US-17 (AGENTS.md alias as symlink), US-18 (local hook enforces the symlink convention).</p>
+</div>
+
+<h2 id="l8">L8 &mdash; Bots that look like users</h2>
+<div class="layer">
+<h3>Primitive: GitHub account identity, <code>users/&lt;login&gt;.type</code></h3>
+<div class="stack">Stack: PR review submitter identity &rarr; ai-cannot-approve workflow &rarr; required status check</div>
+<p>GitHub exposes every account&rsquo;s <code>type</code> field: <code>User</code> or <code>Bot</code>. <code>github-actions[bot]</code> is type Bot. A dedicated bot account (in this plan, <code>conjure-ops</code> at <a href="https://github.com/orgs/conjurehq/people/conjure-ops">orgs/conjurehq/people/conjure-ops</a>) is type User.</p>
+<p>The <code>ai-cannot-approve.yml</code> workflow listens to <code>pull_request_review</code> events, fetches the reviewer&rsquo;s type, and <em>fails</em> if a Bot-type account submitted an approving review. This prevents <code>github-actions[bot]</code> &mdash; or any other Bot identity &mdash; from satisfying CODEOWNER review.</p>
+<p>The AI review pipeline (CodeRabbit + Claude Code bot + Chrome MCP) lives on top of this:</p>
+<ul>
+  <li>CodeRabbit posts inline comments and a summary &mdash; never an approval.</li>
+  <li>Claude Code via the <code>conjure-ops</code> account uses a User-type identity (so its comments don&rsquo;t trip the ai-cannot-approve guard), but is deliberately <em>not</em> in CODEOWNERS (so its approvals can&rsquo;t satisfy required-review). The bot's PAT is the <code>GH_AGENT_PAT</code> repo secret.</li>
+  <li>Chrome MCP runs Claude Code in a headless Chrome to drive UI journeys; emits PR comments with findings.</li>
+</ul>
+<p class="satisfies">Satisfies: US-20 (bot approval can&rsquo;t pass CODEOWNER review); foundational for US-28&ndash;30 (the AI review pipeline).</p>
+</div>
+
+<h2 id="l9">L9 &mdash; Docs as load-bearing content</h2>
+<div class="layer">
+<h3>Primitive: workflow that runs a model over the diff</h3>
+<div class="stack">Stack: <code>pull_request</code> event &rarr; workflow checks out PR &rarr; runs Claude Code with diff + docs as input &rarr; publishes status</div>
+<p>Docs aren&rsquo;t throwaway content &mdash; they&rsquo;re what every agent loads as scope. Two workflows protect them:</p>
+<ul>
+  <li><strong>docs-sanity</strong> &mdash; cheap, fast Haiku call: &ldquo;did this PR remove docs accidentally?&rdquo; Threshold-driven. Required check.</li>
+  <li><strong>docs-drift</strong> &mdash; dispatcher-pattern Claude Code call: read the diff, decide which docs sections plausibly describe the changed code, fan out subagents to compare each, post a PR comment with drift findings. Advisory at first.</li>
+</ul>
+<p>Both follow the L2 pattern &mdash; workflow always runs, even when docs aren&rsquo;t touched, so the required-check name always reports.</p>
+<p class="satisfies">Satisfies: US-21 (sanity check on accidental deletion), US-22 (drift detection between code and docs).</p>
+</div>
+
+<h2 id="model">Mental model</h2>
+<p>One sentence: <strong><code>main</code> is a guarded ref whose advance is conditioned on (a) <em>shape</em> rules at the git level, (b) <em>contract</em> rules from named status checks, and (c) <em>identity</em> rules from CODEOWNERS-resolved reviews.</strong> Every other piece in the plan is either a producer of one of those signals or a layer that runs <em>before</em> the server ever sees a push.</p>
+<p>The three tiers, by where they run:</p>
+<table>
+  <thead><tr><th>Where</th><th>When</th><th>Pieces</th></tr></thead>
+  <tbody>
+    <tr><td>Developer&rsquo;s machine</td><td>pre-push</td><td>pre-commit hooks, LFS clean filter, <code>.gitattributes</code></td></tr>
+    <tr><td>GitHub server</td><td>at ref update</td><td>ruleset rules (shape + status + PR + codeowner)</td></tr>
+    <tr><td>GitHub Actions / external bots</td><td>asynchronously on PR events</td><td>workflows producing statuses, CodeRabbit, Claude Code bot, Chrome MCP</td></tr>
+  </tbody>
+</table>
+<p>The dependency direction is one-way: the server-side ruleset cannot pull data from the pre-commit hooks (different machine), but it <em>can</em> require that CI re-runs the same checks. Local hooks are convenience; the only thing that gates the ref is the ruleset.</p>
+
+<h3>The four mechanisms that do most of the work</h3>
+<ol>
+  <li><strong>Path-scoped CODEOWNERS + <code>count=0</code></strong> &mdash; gives per-tier review enforcement out of one global ruleset.</li>
+  <li><strong>Inner <code>paths-filter</code> + <code>if: always()</code> gate job</strong> &mdash; lets path-scoped CI coexist with required-status-check enforcement.</li>
+  <li><strong>In-repo manifest + R2 with a no-Delete IAM token</strong> &mdash; keeps binary content out of git entirely; resolved on demand by <code>scripts/ops-fetch.sh</code>; protected from accidental destruction by IAM-level scope, not git tricks.</li>
+  <li><strong><code>CLAUDE.md</code> + <code>@-include</code></strong> &mdash; declares per-directory agent scope; loads the right docs without code knowing about it.</li>
+</ol>
+
+<h2 id="use">Real-world application &mdash; one day in the life of a PR</h2>
+<p>Imagine Alice opens a PR touching <code>prod/conjure_tech/frontend/Button.tsx</code> and <code>spikes/alice/experiment/notes.md</code>.</p>
+<ol>
+  <li><strong>Locally</strong>: she runs <code>git commit</code>. The pre-commit fast stage runs (trailing whitespace, gitleaks, large-file check) on both files. The heavy stage (ruff) runs on the prod file only because its <code>files: ^prod/</code> rule matches. If a 3 MB asset slipped in, the large-file check rejects it &mdash; she has to either trim it, add an LFS pattern, or move it to R2.</li>
+  <li><strong>She pushes to a feature branch.</strong> The ruleset has no opinion about feature branches; it only protects <code>main</code>. Push succeeds.</li>
+  <li><strong>She opens a PR.</strong> GitHub starts every workflow that listens for <code>pull_request</code>. The CI workflows always run; their inner <code>changes</code> jobs say <em>both prod and spike paths changed</em>. <code>prod-ci</code> runs its real lint job. <code>ops-ci</code>&rsquo;s lint is skipped. The aggregator jobs (<code>ci-gate</code>, <code>ops-gate</code>, <code>pass</code>) all return <code>success</code>, satisfying the required-context list.</li>
+  <li><strong>CODEOWNERS evaluation</strong>: the diff includes a file under <code>prod/**</code>. The ruleset&rsquo;s <code>require_code_owner_review</code> rule fires. Alice is the author so she can&rsquo;t approve her own PR. If she&rsquo;s the sole codeowner of <code>prod/**</code>, GitHub silently treats the rule as satisfied. If a teammate is also listed, that teammate must approve.</li>
+  <li><strong>AI review</strong>: CodeRabbit posts inline style comments within a minute. The Claude-deep-review bot account posts one summary comment with architecture-level observations. Neither submits an approval, so the ai-cannot-approve guard doesn&rsquo;t fire.</li>
+  <li><strong>Docs workflows</strong>: docs-sanity runs (no docs deleted, passes). docs-drift fans out subagents over <code>docs/architecture/frontend.md</code> and posts a single comment saying which paragraphs may no longer describe the code.</li>
+  <li><strong>Alice clicks Merge</strong> in the web UI. (Or runs <code>gh pr merge</code> &mdash; same endpoint.) All required contexts are <code>success</code>; the PR review state satisfies CODEOWNERS or the sole-owner no-op fires. The ref advances. Squash merge produces one commit on <code>main</code>; linear history preserved.</li>
+</ol>
+
+<h2 id="misc">Common misconceptions</h2>
+<div class="misc"><strong class="no">No.</strong> &ldquo;Branch protection is path-scoped&rdquo;. <strong class="yes">Reality:</strong> rulesets attach to refs, not paths. Path scoping comes from CODEOWNERS and from path-aware workflows, both layered on top.</div>
+<div class="misc"><strong class="no">No.</strong> &ldquo;CODEOWNERS enforces review automatically&rdquo;. <strong class="yes">Reality:</strong> the file is just metadata until the ruleset wires <code>require_code_owner_review: true</code>.</div>
+<div class="misc"><strong class="no">No.</strong> &ldquo;Required status checks need <code>paths:</code> filters in the workflow trigger&rdquo;. <strong class="yes">Reality:</strong> the opposite. Top-level <code>paths:</code> blocks the workflow from starting on non-matching paths, so its status never gets written. The required context shows as &ldquo;expected/missing&rdquo; and the PR is stuck. Filter <em>inside</em> the workflow, not at the trigger.</div>
+<div class="misc"><strong class="no">No.</strong> &ldquo;The author can self-approve their own PR with the right setting&rdquo;. <strong class="yes">Reality:</strong> GitHub rejects this at the GraphQL layer: <em>&ldquo;Can not approve your own pull request.&rdquo;</em> The workaround is the sole-codeowner no-op, or a peer codeowner.</div>
+<div class="misc"><strong class="no">No.</strong> &ldquo;We use Git LFS for binaries&rdquo;. <strong class="yes">Reality:</strong> we don&rsquo;t. The plan uses R2 + an in-repo manifest. LFS bandwidth meters every clone and CI run, bills accumulate on forks, and the deletion-protection story is messy. R2 has zero egress fees, and the IAM <em>no-Delete</em> token is a simpler and stronger guarantee than anything LFS offers.</div>
+<div class="misc"><strong class="no">No.</strong> &ldquo;<code>git pull</code> can lose my untracked spike files when someone deletes the folder&rdquo;. <strong class="yes">Reality:</strong> git never touches untracked files during pull. The folder is preserved if untracked content remains. The only command that destroys untracked files is <code>git clean -fd</code>.</div>
+<div class="misc"><strong class="no">No.</strong> &ldquo;UI-only merge can be enforced by GitHub config&rdquo;. <strong class="yes">Reality:</strong> the web UI and <code>gh pr merge</code> hit the same REST endpoint. No native distinction. This is a policy/cultural choice, not a config.</div>
+<div class="misc"><strong class="no">No.</strong> &ldquo;Workflows skip implicitly when their paths aren&rsquo;t touched, that&rsquo;s good&rdquo;. <strong class="yes">Reality:</strong> implicit skip via top-level <code>paths:</code> means no status is published, which makes required checks block forever. Explicit skip-as-success via an always-running aggregator job is what works.</div>
+
+<div class="summary">
+<h2 id="tldr" style="margin-top: 4px; border: none;">Summary &mdash; five bullets</h2>
+<ol>
+  <li><code>main</code> is a guarded ref. Server-side rules (no force-push, linear history, required PR, required status checks) describe what shape and provenance of update is acceptable.</li>
+  <li>Required status checks bind ref advance to external <em>contracts</em>, fulfilled by workflow jobs. The workflows must <em>always start</em> and gate work internally with <code>dorny/paths-filter</code> + <code>if: always()</code> aggregator &mdash; otherwise required contexts go missing.</li>
+  <li>CODEOWNERS plus <code>required_approving_review_count = 0</code> plus <code>require_code_owner_review = true</code> is what gives <em>path-scoped</em> review enforcement out of one ruleset, including the sole-codeowner no-op that lets the author merge their own prod PR.</li>
+  <li>Pre-commit hooks reject &gt; 1 MB files at commit; binary content lives in R2 (bucket <code>conjure-ops</code>) addressed by an in-repo manifest. The CI/agent IAM token has <em>no Delete</em>, enforced by a daily canary workflow.</li>
+  <li>Agent context (nested CLAUDE.md + sentinels) and AI review (CodeRabbit + Claude Code bot User-account + Chrome MCP) layer on top of these primitives; bot-as-User identity plus the ai-cannot-approve workflow stop automation from gaming the review system.</li>
+</ol>
+</div>
+
+<footer>
+Built from the test-subrepo-cicd validation run on 2026-05-14. Cross-references: <a href="results.html">results.html</a> &middot; <a href="executive-summary.html">executive-summary.html</a> &middot; <code>README.md</code> &middot; <code>docs/agents/</code>.
+</footer>
+
+</main>
+</body>
+</html>

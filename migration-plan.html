@@ -55,6 +55,10 @@
     .toc ol { padding-left: 22px; margin: 8px 0; }
     .toc li { margin: 4px 0; }
     .placeholder { background: #fff3df; padding: 1px 5px; border-radius: 3px; font-style: italic; font-size: 13px; }
+    .done { color: var(--pass); font-weight: 700; margin-right: 4px; }
+    .phase.done-phase { border-left-color: var(--pass); }
+    .phase.done-phase h2::after { content: " ✓"; color: var(--pass); }
+    .partial { background: var(--warn-bg); color: var(--warn); padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; margin-left: 6px; }
   </style>
 </head>
 <body>
@@ -63,17 +67,19 @@
 <h1>Monorepo migration &mdash; step-by-step plan</h1>
 <p class="lede">End-to-end procedure for taking <code>conjurehq/conjure</code> and turning it into a per-path-protected monorepo per the design in <a href="results.html">results.html</a> and <a href="first-principles.html">first-principles.html</a>. Every step lists the exact command, the exact GitHub URL, and what to verify before moving on.</p>
 
-<p>Variable placeholders used below: <span class="placeholder">&lt;ORG&gt;</span> = <code>conjurehq</code>, <span class="placeholder">&lt;REPO&gt;</span> = <code>monorepo</code> (suggested; you can keep <code>conjure</code> if you want to restructure in place), <span class="placeholder">&lt;USER&gt;</span> = <code>ronaldluc</code>.</p>
+<p>Fixed names (chosen by user): repo is <code>conjurehq/conjure</code> (new); old single-product repo renamed to <code>conjurehq/conjure_tech</code>; bot account is <code>conjure-ops</code>; PATs are <code>GitHub Agent PAT</code> (bot, in <em>1Password &rarr; Conjure / Dev Secrets</em>) and <code>MIGRATION_PAT</code> (your personal account, in <em>1Password &rarr; Employee</em>); Anthropic key is <code>anthropic-conjure-analytics</code> (in <em>Dev Secrets</em>).</p>
+
+<div class="verify" style="margin-top:0;"><strong>Already done</strong>: Path B (rename <code>conjure</code>&rarr;<code>conjure_tech</code>, create new empty <code>conjure</code>); <code>conjure-ops</code> bot account; both PATs; Anthropic key. Phases 0 and 1 are largely ticked off &mdash; see the green checkmarks inline.</div>
 
 <div class="toc">
 <h3 style="margin-top:4px;">Phases</h3>
 <ol>
   <li><a href="#preflight">Pre-flight decisions &amp; account inventory</a></li>
   <li><a href="#p0">Phase 0 &mdash; Bot accounts and PATs</a></li>
-  <li><a href="#p1">Phase 1 &mdash; Create the empty monorepo on GitHub</a></li>
+  <li><a href="#p1">Phase 1 &mdash; Configure the new <code>conjure</code> repo</a></li>
   <li><a href="#p2">Phase 2 &mdash; Import conjure into <code>prod/conjure_tech/</code> with full history</a></li>
   <li><a href="#p3">Phase 3 &mdash; Scaffold directory tree + CLAUDE.md hierarchy</a></li>
-  <li><a href="#p4">Phase 4 &mdash; LFS, <code>.gitattributes</code>, R2 setup</a></li>
+  <li><a href="#p4">Phase 4 &mdash; R2 asset storage (no LFS)</a></li>
   <li><a href="#p5">Phase 5 &mdash; Pre-commit (fast + heavy)</a></li>
   <li><a href="#p6">Phase 6 &mdash; CI workflows + skip-as-success gate</a></li>
   <li><a href="#p7">Phase 7 &mdash; CODEOWNERS + branch ruleset</a></li>
@@ -90,112 +96,121 @@
 
 <p>Time budget: 2.5&ndash;3 focused days of work for one engineer. Phases 0, 4, 10 each have asynchronous waits (token issuance, R2 propagation, CodeRabbit install).</p>
 
-<h2 id="preflight">Pre-flight &mdash; decide and inventory</h2>
+<h2 id="changes">Changes since the original plan</h2>
+<ul>
+  <li><strong>Path B (in place):</strong> old <code>conjure</code> &rarr; renamed to <code>conjure_tech</code>; new empty <code>conjure</code> created. The monorepo keeps the prime URL.</li>
+  <li><strong>No LFS at all</strong>: every binary asset is in Cloudflare R2 (<code>conjure-ops</code> bucket, no-delete token). Phase 4 rewritten; US-12/13/14 retired in favour of US-23/24 + a daily no-delete canary check.</li>
+  <li><strong>Bot account named <code>conjure-ops</code></strong> (not <code>conjure-reviewer</code>).</li>
+  <li><strong>GitHub secret named <code>GH_AGENT_PAT</code></strong> (sources from <em>1Password &rarr; Dev Secrets &rarr; GitHub Agent PAT</em>).</li>
+  <li>Migration source is <code>conjurehq/conjure_tech</code>. The legacy <code>conjurehq/conjure</code> URL no longer redirects.</li>
+</ul>
+
+<h2 id="preflight">Pre-flight &mdash; decisions taken</h2>
 <div class="pre-flight">
-<h3>Decisions you make before anything else</h3>
 <table>
-  <thead><tr><th>Decision</th><th>Choices</th><th>Default</th></tr></thead>
+  <thead><tr><th>Decision</th><th>Final choice</th></tr></thead>
   <tbody>
-    <tr><td>Repo strategy</td><td>(a) new repo <code>conjurehq/monorepo</code>, (b) restructure <code>conjurehq/conjure</code> in place</td><td><strong>(a)</strong> &mdash; cleaner; old repo becomes archive</td></tr>
-    <tr><td>History preservation</td><td>full git history vs. start fresh</td><td><strong>full</strong> &mdash; <code>git filter-repo</code> moves files under <code>prod/conjure_tech/</code> while keeping history</td></tr>
-    <tr><td>Initial CODEOWNERS members</td><td>just <code>@ronaldluc</code>, or add &ge; 1 peer</td><td>start solo; add &ge; 1 peer per protected path before promoting Layer 2 docs-drift to required</td></tr>
-    <tr><td>R2 bucket layout</td><td>existing <code>conjure-artifacts</code> bucket, or new <code>conjure-ops</code> bucket</td><td><strong>new</strong> &mdash; isolates the no-delete IAM token from prod workloads</td></tr>
-    <tr><td>Default branch name</td><td><code>main</code> vs <code>master</code></td><td><code>main</code></td></tr>
+    <tr><td>Repo strategy</td><td><span class="done">✅</span> <strong>Path B</strong>: rename old <code>conjure</code> &rarr; <code>conjure_tech</code>, create new empty <code>conjure</code>. Both repos exist; new <code>conjure</code> becomes the monorepo at the prime URL.</td></tr>
+    <tr><td>History preservation</td><td>Full git history &mdash; <code>git filter-repo --to-subdirectory-filter prod/conjure_tech</code>. Source is now <code>conjurehq/conjure_tech</code>.</td></tr>
+    <tr><td>Initial CODEOWNERS members</td><td>solo (<code>@ronaldluc</code>); add &ge; 1 peer per protected path before promoting docs-drift to required.</td></tr>
+    <tr><td>Binary asset storage</td><td><span class="done">✅</span> <strong>No LFS at all.</strong> All binary assets live in a Cloudflare R2 bucket; the repo stores hash-pinned references in <code>ops/orders/manifest.json</code>. Reuses the existing object-store abstraction (<code>magic/storage/object_store.py</code>) and the <code>scripts/setup-r2.sh</code> bootstrap pattern from the old conjure repo. Token used by code/CI/agents has <strong>no Delete</strong> permission.</td></tr>
+    <tr><td>Default branch name</td><td><code>main</code></td></tr>
   </tbody>
 </table>
 
 <h3>Account / asset inventory</h3>
-<ul>
-  <li>GitHub org-admin on <span class="placeholder">&lt;ORG&gt;</span></li>
-  <li>Fine-grained PAT with <em>Administration, Pull requests, Actions, Contents, Metadata</em> = write on the new repo</li>
-  <li>Cloudflare account with R2 enabled, ability to mint scoped API tokens</li>
-  <li>Anthropic API key for the Claude review bot (separate from your interactive Claude Code use)</li>
-  <li>CodeRabbit account &mdash; will install as a GitHub App on the repo</li>
-  <li>Local: <code>gh</code>, <code>git</code> &ge; 2.40, <code>git-lfs</code>, <code>git-filter-repo</code> (<code>brew install git-filter-repo</code> / <code>pipx install git-filter-repo</code>), <code>pre-commit</code></li>
-</ul>
+<table>
+  <thead><tr><th>Asset</th><th>Status</th><th>Location</th></tr></thead>
+  <tbody>
+    <tr><td>GitHub org-admin on <code>conjurehq</code></td><td><span class="done">✅</span></td><td>your personal account</td></tr>
+    <tr><td>Bot user account <code>conjure-ops</code></td><td><span class="done">✅</span></td><td><a href="https://github.com/orgs/conjurehq/people/conjure-ops">https://github.com/orgs/conjurehq/people/conjure-ops</a></td></tr>
+    <tr><td><code>MIGRATION_PAT</code> (personal)</td><td><span class="done">✅</span></td><td>1Password &rarr; <em>Employee</em> (correct location &mdash; tied to your identity; rotated when you leave)</td></tr>
+    <tr><td><code>GitHub Agent PAT</code> (bot)</td><td><span class="done">✅</span></td><td>1Password &rarr; <em>Conjure / Dev Secrets</em> (bot identity, persists past any individual)</td></tr>
+    <tr><td>Anthropic key <code>anthropic-conjure-analytics</code></td><td><span class="done">✅</span></td><td>1Password &rarr; <em>Conjure / Dev Secrets</em></td></tr>
+    <tr><td>Cloudflare account, R2 enabled, scoped-token mint capability</td><td><span class="partial">existing</span></td><td>same account that owns <code>conjure-artifacts</code></td></tr>
+    <tr><td>CodeRabbit account (installs as GitHub App on the new <code>conjure</code> repo)</td><td>pending Phase 10</td><td>&mdash;</td></tr>
+    <tr><td>Local CLI: <code>gh</code>, <code>git</code> &ge; 2.40, <code>git-filter-repo</code> (<code>pipx install git-filter-repo</code>), <code>pre-commit</code></td><td>verify before Phase 2</td><td>&mdash;</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Note on the MIGRATION_PAT location:</strong> the Employee folder is right. The PAT is tied to <em>you</em> (org-admin via your personal GitHub account). When you leave or rotate, it goes with you. The <code>GitHub Agent PAT</code> is on the <code>conjure-ops</code> bot account &mdash; it stays with the org regardless of which human holds the keys.</p>
 </div>
 
 <!-- ====================================================== -->
-<div class="phase" id="p0">
-  <header><h2>Phase 0 &mdash; Bot accounts and PATs</h2><span class="meta">~45 min &middot; do this first; token issuance is bursty</span></header>
+<div class="phase done-phase" id="p0">
+  <header><h2>Phase 0 &mdash; Bot account and PATs</h2><span class="meta">~45 min &middot; <strong>DONE</strong></span></header>
 
-  <h4>0.1 &mdash; Create the Claude review bot user account</h4>
-  <ol class="steps">
-    <li>Sign out of your personal GitHub account in a private browser window.</li>
-    <li>Go to <span class="url"><a href="https://github.com/join">https://github.com/join</a></span> and create a new user. Suggested handle: <code>conjure-reviewer</code>. Use a dedicated email (e.g. <code>reviewer-bot@<your-domain></code>).</li>
-    <li>Verify the email. Enable 2FA (required for org membership).</li>
-    <li>Invite the bot to the org: <span class="url"><a href="https://github.com/orgs/conjurehq/people">https://github.com/orgs/conjurehq/people</a></span> &rarr; <strong>Invite member</strong>. Set role: <strong>Member</strong> (not Owner).</li>
-    <li>From the bot account, accept the invite. <span class="pill pill-bad">Verify:</span> <code>gh api users/conjure-reviewer --jq .type</code> returns <code>"User"</code> (not <code>"Bot"</code>). This is what lets its comments pass the ai-cannot-approve guard.</li>
-  </ol>
+  <h4>0.1 &mdash; Bot user account <span class="done">✅</span></h4>
+  <ul>
+    <li>Handle: <code>conjure-ops</code> &mdash; <span class="url"><a href="https://github.com/orgs/conjurehq/people/conjure-ops">https://github.com/orgs/conjurehq/people/conjure-ops</a></span></li>
+    <li>Org member, type <code>User</code> (verify with <code>gh api users/conjure-ops --jq .type</code> &rarr; expect <code>"User"</code>). This lets its review comments pass the ai-cannot-approve guard, and lets it be impersonated by the bot PAT.</li>
+  </ul>
 
-  <h4>0.2 &mdash; Mint PATs</h4>
-  <p>Two PATs needed. Generate at <span class="url"><a href="https://github.com/settings/personal-access-tokens">https://github.com/settings/personal-access-tokens</a></span>.</p>
+  <h4>0.2 &mdash; PATs <span class="done">✅</span></h4>
   <table>
-    <thead><tr><th>PAT</th><th>Owned by</th><th>Permissions on &lt;REPO&gt;</th></tr></thead>
+    <thead><tr><th>PAT name</th><th>Owned by</th><th>1Password location</th><th>Required scopes</th></tr></thead>
     <tbody>
-      <tr><td><code>MIGRATION_PAT</code></td><td>your account</td><td>Administration: write, Actions: write, Contents: write, Pull requests: write, Metadata: read, Workflows: write</td></tr>
-      <tr><td><code>CLAUDE_REVIEWER_PAT</code></td><td>conjure-reviewer (bot account)</td><td>Contents: read, Pull requests: write, Metadata: read</td></tr>
+      <tr><td><code>MIGRATION_PAT</code></td><td>your personal account (<code>@ronaldluc</code>)</td><td><em>Employee</em> (correct &mdash; ties to your identity)</td><td>Administration: write, Actions: write, Contents: write, Pull requests: write, Workflows: write, Metadata: read</td></tr>
+      <tr><td><code>GitHub Agent PAT</code></td><td><code>conjure-ops</code> bot account</td><td><em>Conjure / Dev Secrets</em></td><td>Contents: read, Pull requests: write, Metadata: read</td></tr>
     </tbody>
   </table>
-  <p>Store both in 1Password under <code>Dev Secrets &rarr; monorepo migration</code>. Mark expiry 90 days.</p>
+  <p>If the bot PAT needs to <em>write</em> to repo content later (e.g. for an auto-fix workflow), bump <code>Contents</code> to <em>write</em>. Default is read-only so a leaked PAT can&rsquo;t damage code.</p>
 
-  <h4>0.3 &mdash; Anthropic API key</h4>
-  <p><span class="url"><a href="https://console.anthropic.com/settings/keys">https://console.anthropic.com/settings/keys</a></span> &rarr; Create key &rarr; name it <code>conjure-claude-reviewer</code>. Add it to 1Password.</p>
+  <h4>0.3 &mdash; Anthropic API key <span class="done">✅</span></h4>
+  <p><code>anthropic-conjure-analytics</code> &mdash; in <em>1Password &rarr; Conjure / Dev Secrets</em>. (Reused name from the existing analytics key; same key works for the reviewer workflow. If you want isolation later, mint a second key named <code>anthropic-conjure-reviewer</code>.)</p>
 
-  <div class="verify"><strong>Verify Phase 0:</strong> all three secrets in 1Password, bot account is org member, <code>gh api users/conjure-reviewer --jq .type</code> returns <code>"User"</code>.</div>
+  <div class="verify"><strong>Phase 0 verify status:</strong> <span class="done">✅</span> all three secrets in 1Password; bot account is org member; <code>gh api users/conjure-ops --jq .type</code> returns <code>"User"</code>.</div>
 </div>
 
 <!-- ====================================================== -->
 <div class="phase" id="p1">
-  <header><h2>Phase 1 &mdash; Create the empty monorepo</h2><span class="meta">~10 min</span></header>
+  <header><h2>Phase 1 &mdash; Configure the new <code>conjure</code> repo</h2><span class="meta">~10 min &middot; mostly settings</span></header>
 
-  <h4>1.1 &mdash; Create the repo</h4>
-  <p><span class="pill pill-ui">UI</span> Visit <span class="url"><a href="https://github.com/organizations/conjurehq/repositories/new">https://github.com/organizations/conjurehq/repositories/new</a></span> and fill in:</p>
+  <h4>1.1 &mdash; Repo created <span class="done">✅</span></h4>
+  <p>Path B done: <code>conjure</code> &rarr; <code>conjure_tech</code> rename, new empty <code>conjurehq/conjure</code> exists. URL: <span class="url"><a href="https://github.com/conjurehq/conjure">https://github.com/conjurehq/conjure</a></span>. <strong>Don&rsquo;t</strong> initialise it with README/.gitignore &mdash; we&rsquo;ll push into it.</p>
+
+  <h4>1.2 &mdash; LFS &mdash; SKIP</h4>
+  <p>Decision: no LFS at all. R2 is the canonical store. The LFS settings panel can stay default; no patterns to configure.</p>
+
+  <h4>1.3 &mdash; Disable unused features</h4>
+  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/conjure/settings">https://github.com/conjurehq/conjure/settings</a></span> &rarr; <em>Features</em> section &rarr; uncheck Wiki, Projects, Discussions if you don&rsquo;t use them.</p>
+
+  <h4>1.4 &mdash; Actions permissions</h4>
+  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/conjure/settings/actions">https://github.com/conjurehq/conjure/settings/actions</a></span></p>
   <ul>
-    <li>Repository name: <code>monorepo</code></li>
-    <li>Owner: <code>conjurehq</code></li>
-    <li>Visibility: <strong>Private</strong></li>
-    <li><strong>Do NOT</strong> initialise with README, .gitignore, or licence &mdash; we want a fully empty repo to import history into.</li>
+    <li><em>Workflow permissions</em>: <strong>Read and write</strong>.</li>
+    <li>Tick <strong>Allow GitHub Actions to create and approve pull requests</strong> (the ai-cannot-approve workflow still blocks Bot-type approvals; this is just to enable Dependabot auto-merge if you want it).</li>
   </ul>
 
-  <h4>1.2 &mdash; Enable LFS</h4>
-  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/monorepo/settings/lfs">https://github.com/conjurehq/monorepo/settings/lfs</a></span> &rarr; flip on. Usually on by default on org plans; double-check.</p>
-
-  <h4>1.3 &mdash; Disable wiki, projects, discussions you don't use</h4>
-  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/monorepo/settings">https://github.com/conjurehq/monorepo/settings</a></span> &rarr; <em>Features</em> section &rarr; uncheck whatever you don't use.</p>
-
-  <h4>1.4 &mdash; Set default branch + actions permissions</h4>
-  <p><span class="pill pill-ui">UI</span></p>
-  <ul>
-    <li><span class="url"><a href="https://github.com/conjurehq/monorepo/settings/actions">https://github.com/conjurehq/monorepo/settings/actions</a></span> &rarr; <em>Workflow permissions</em>: <strong>Read and write permissions</strong>. Tick <strong>Allow GitHub Actions to create and approve pull requests</strong>. (We will block bot approvals via the workflow guard, but this gives us flexibility for Dependabot auto-merge later.)</li>
-  </ul>
-
-  <h4>1.5 &mdash; Store secrets</h4>
-  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/monorepo/settings/secrets/actions">https://github.com/conjurehq/monorepo/settings/secrets/actions</a></span> &rarr; <strong>New repository secret</strong>, four times:</p>
+  <h4>1.5 &mdash; Store repo secrets</h4>
+  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/conjure/settings/secrets/actions">https://github.com/conjurehq/conjure/settings/secrets/actions</a></span> &rarr; <strong>New repository secret</strong>:</p>
   <table>
-    <thead><tr><th>Name</th><th>Source</th></tr></thead>
+    <thead><tr><th>GitHub secret name</th><th>Source (1Password)</th></tr></thead>
     <tbody>
-      <tr><td><code>CLAUDE_REVIEWER_PAT</code></td><td>from Phase 0.2 (bot account PAT)</td></tr>
-      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>from Phase 0.3</td></tr>
-      <tr><td><code>R2_OPS_ACCESS_KEY</code></td><td>filled in Phase 4 once R2 is up</td></tr>
-      <tr><td><code>R2_OPS_SECRET_KEY</code></td><td>filled in Phase 4 once R2 is up</td></tr>
+      <tr><td><code>GH_AGENT_PAT</code></td><td><em>Conjure / Dev Secrets &rarr; GitHub Agent PAT</em> (bot account PAT)</td></tr>
+      <tr><td><code>ANTHROPIC_API_KEY</code></td><td><em>Conjure / Dev Secrets &rarr; anthropic-conjure-analytics</em></td></tr>
+      <tr><td><code>R2_OPS_ACCESS_KEY</code></td><td>filled in Phase 4 once R2 token is minted</td></tr>
+      <tr><td><code>R2_OPS_SECRET_KEY</code></td><td>filled in Phase 4 once R2 token is minted</td></tr>
+      <tr><td><code>R2_OPS_ENDPOINT</code></td><td>filled in Phase 4 once R2 bucket exists</td></tr>
     </tbody>
   </table>
+  <p>The secret <em>name in GitHub</em> doesn&rsquo;t have to match the 1Password item name &mdash; pick whatever&rsquo;s short and explicit in workflows.</p>
 
-  <div class="verify"><strong>Verify Phase 1:</strong> <code>gh repo view conjurehq/monorepo</code> succeeds; <code>gh api repos/conjurehq/monorepo/actions/secrets --jq '.secrets[].name'</code> lists the two secrets you have so far.</div>
+  <div class="verify"><strong>Verify Phase 1:</strong> <code>gh repo view conjurehq/conjure</code> succeeds. <code>gh api repos/conjurehq/conjure/actions/secrets --jq '.secrets[].name'</code> lists <code>GH_AGENT_PAT</code> and <code>ANTHROPIC_API_KEY</code>.</div>
 </div>
 
 <!-- ====================================================== -->
 <div class="phase" id="p2">
   <header><h2>Phase 2 &mdash; Import conjure into <code>prod/conjure_tech/</code></h2><span class="meta">~30 min &middot; the only step where you can lose history if you fat-finger</span></header>
 
-  <h4>2.1 &mdash; Make a working copy of conjure</h4>
+  <h4>2.1 &mdash; Make a working copy of conjure_tech (the renamed old repo)</h4>
   <pre>cd /home/pyronaut/work
-git clone git@github.com:conjurehq/conjure.git conjure-import
+git clone git@github.com:conjurehq/conjure_tech.git conjure-import
 cd conjure-import
 git fetch --all --tags
 # sanity
-git log --oneline | wc -l   # should match conjurehq/conjure's commit count</pre>
+git log --oneline | wc -l   # should match conjure_tech's commit count</pre>
+  <p>The old <code>conjurehq/conjure</code> URL now <em>does not redirect</em> &mdash; it points at the brand-new empty monorepo. Always clone from <code>conjurehq/conjure_tech</code> explicitly until the migration is done.</p>
 
   <h4>2.2 &mdash; Move every file under <code>prod/conjure_tech/</code> with full history</h4>
   <p><code>git filter-repo</code> rewrites every commit so paths are prefixed. Order matters: run only on the working copy, never on a checkout that other things share.</p>
@@ -207,13 +222,13 @@ find . -maxdepth 3 -not -path "./.git/*" | head</pre>
 
   <div class="danger"><strong>Danger:</strong> <code>filter-repo</code> rewrites history. Don&rsquo;t do this in your daily-driver checkout. The fresh <code>conjure-import</code> clone is throwaway.</div>
 
-  <h4>2.3 &mdash; Push to the new monorepo</h4>
+  <h4>2.3 &mdash; Push to the new <code>conjure</code> repo</h4>
   <pre>git remote remove origin
-git remote add origin git@github.com:conjurehq/monorepo.git
+git remote add origin git@github.com:conjurehq/conjure.git
 git push -u origin main   # ruleset is not on yet; this works</pre>
   <p>Push will be slow &mdash; the full history is transferring. Expect 5&ndash;15 min depending on repo size.</p>
 
-  <div class="verify"><strong>Verify Phase 2:</strong> visit <span class="url"><a href="https://github.com/conjurehq/monorepo/tree/main/prod/conjure_tech">https://github.com/conjurehq/monorepo/tree/main/prod/conjure_tech</a></span> and confirm the conjure source tree is there. <code>git log</code> shows the original conjure history with paths now prefixed.</div>
+  <div class="verify"><strong>Verify Phase 2:</strong> visit <span class="url"><a href="https://github.com/conjurehq/conjure/tree/main/prod/conjure_tech">https://github.com/conjurehq/conjure/tree/main/prod/conjure_tech</a></span> and confirm the conjure source tree is there. <code>git log</code> shows the original conjure history with paths now prefixed.</div>
 </div>
 
 <!-- ====================================================== -->
@@ -236,7 +251,17 @@ mkdir -p scripts .github/workflows .github/prompts</pre>
   <pre># in conjure-import:
 cp /home/pyronaut/work/test-subrepo-cicd/CLAUDE.md ./CLAUDE.md
 cp /home/pyronaut/work/test-subrepo-cicd/.pre-commit-config.yaml ./
-cp /home/pyronaut/work/test-subrepo-cicd/.gitattributes ./
+# .gitattributes: do NOT copy from test-subrepo-cicd (that one has LFS patterns).
+# Write a minimal one per Phase 4.6:
+cat > .gitattributes &lt;&lt;'EOF'
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.glb binary
+*.mp4 binary
+*.xlsx binary
+*.safetensors binary
+EOF
 cp /home/pyronaut/work/test-subrepo-cicd/scripts/check-agents-symlinks.sh scripts/
 chmod +x scripts/check-agents-symlinks.sh
 cp /home/pyronaut/work/test-subrepo-cicd/.github/CODEOWNERS .github/
@@ -310,39 +335,44 @@ git push -u origin chore/scaffold-monorepo</pre>
 
 <!-- ====================================================== -->
 <div class="phase" id="p4">
-  <header><h2>Phase 4 &mdash; LFS, <code>.gitattributes</code>, R2 setup</h2><span class="meta">~60 min &middot; includes async wait for Cloudflare token propagation (~5 min)</span></header>
+  <header><h2>Phase 4 &mdash; R2 asset storage (no LFS)</h2><span class="meta">~60 min &middot; reuses existing conjure tooling</span></header>
 
-  <h4>4.1 &mdash; LFS patterns</h4>
-  <p>The <code>.gitattributes</code> copied in Phase 3.3 already routes <code>*.mp4 *.mkv *.glb *.safetensors</code> to LFS. Add anything else you currently version that&rsquo;s &gt; 2 MB and isn&rsquo;t text. Suggested additions for conjure:</p>
-  <pre>*.psd     filter=lfs diff=lfs merge=lfs -text
-*.sketch  filter=lfs diff=lfs merge=lfs -text
-*.fig     filter=lfs diff=lfs merge=lfs -text
-*.pkl     filter=lfs diff=lfs merge=lfs -text
-*.onnx    filter=lfs diff=lfs merge=lfs -text</pre>
+  <h4>Decision recap</h4>
+  <p><strong>No git LFS at all.</strong> Every binary asset (xlsx, glb, mp4, model files, fixtures &gt; 1 MB) lives in Cloudflare R2. The git repo stores only hash-pinned references in <code>ops/orders/manifest.json</code> (and similar manifest files per use case). This is the same pattern <code>conjure_tech/scripts/fulfill-orders.py</code> already uses for STL downloads.</p>
 
-  <h4>4.2 &mdash; Create the R2 ops bucket</h4>
-  <p><span class="pill pill-ui">UI</span> Cloudflare dashboard &rarr; R2 &rarr; <strong>Create bucket</strong>. Name: <code>conjure-ops</code>. Same account/region as the existing <code>conjure-artifacts</code> bucket. Direct URL: <span class="url"><a href="https://dash.cloudflare.com">https://dash.cloudflare.com</a></span> &rarr; R2 Object Storage &rarr; Create bucket.</p>
+  <h4>4.1 &mdash; Reuse the existing object-store abstraction</h4>
+  <p>Conjure already ships a Python S3-compatible client at <code>magic/storage/object_store.py</code> (Protocol + MinIO + Mock implementations). When you import conjure into <code>prod/conjure_tech/</code> in Phase 2, the file moves to <code>prod/conjure_tech/magic/storage/object_store.py</code>. The repo-root tooling we&rsquo;re about to write delegates to that module rather than duplicating S3-client code.</p>
 
-  <h4>4.3 &mdash; Scoped API token for CI (no Delete)</h4>
+  <h4>4.2 &mdash; Create the <code>conjure-ops</code> R2 bucket</h4>
+  <p>You can re-run the existing bootstrap (port from <code>conjure_tech/scripts/setup-r2.sh</code>) with a different bucket name, or do it once in the UI:</p>
+  <p><span class="pill pill-ui">UI</span> Cloudflare dashboard &rarr; R2 &rarr; <strong>Create bucket</strong>. Name: <code>conjure-ops</code>. Same account as <code>conjure-artifacts</code>. Direct URL: <span class="url"><a href="https://dash.cloudflare.com">https://dash.cloudflare.com</a></span> &rarr; R2.</p>
+  <p>Keep <code>conjure-artifacts</code> as-is &mdash; it serves the live API. <code>conjure-ops</code> is the new bucket for repo-tracked assets (orders xlsx, design files, model weights, fixtures).</p>
+
+  <h4>4.3 &mdash; Mint the scoped no-delete token <span class="pill pill-bad">most important step</span></h4>
   <p><span class="pill pill-ui">UI</span> R2 &rarr; <strong>Manage API Tokens</strong> &rarr; <strong>Create API Token</strong>:</p>
   <ul>
-    <li>Name: <code>monorepo-ops-rw-no-delete</code></li>
-    <li>Permissions: <strong>Object Read &amp; Write</strong> (NOT Admin Read &amp; Write)</li>
-    <li>Buckets: <code>conjure-ops</code> only</li>
+    <li>Name: <code>conjure-rw-no-delete</code></li>
+    <li>Permissions: <strong>Object Read &amp; Write</strong> (not Admin)</li>
+    <li>Buckets: <code>conjure-ops</code> only (do not multi-select with <code>conjure-artifacts</code>)</li>
     <li>TTL: 1 year</li>
   </ul>
-  <p>Save the access key, secret key, and S3 endpoint URL. Add them to repo secrets (Phase 1.5) as <code>R2_OPS_ACCESS_KEY</code>, <code>R2_OPS_SECRET_KEY</code>, <code>R2_OPS_ENDPOINT</code>.</p>
+  <p>Save Access Key, Secret Key, and the account-scoped S3 endpoint URL (looks like <code>https://&lt;account-hash&gt;.r2.cloudflarestorage.com</code>) to 1Password under <em>Conjure / Dev Secrets &rarr; r2-conjure-ops</em>. Add to GitHub repo secrets as <code>R2_OPS_ACCESS_KEY</code>, <code>R2_OPS_SECRET_KEY</code>, <code>R2_OPS_ENDPOINT</code>.</p>
 
-  <div class="danger"><strong>Critical check:</strong> from a shell with those credentials, run <code>aws s3 rm s3://conjure-ops/test-object --endpoint-url=&lt;R2_ENDPOINT&gt;</code>. It should fail with <strong>403 Forbidden</strong>. If it succeeds, the token has Delete permission and you need to re-mint it with the right scope.</div>
+  <div class="danger"><strong>Critical check &mdash; do this immediately:</strong> from a shell with those credentials, attempt a delete:
+  <pre>AWS_ACCESS_KEY_ID=&lt;key&gt; AWS_SECRET_ACCESS_KEY=&lt;secret&gt; \
+  aws s3 rm s3://conjure-ops/test-object --endpoint-url=&lt;R2_OPS_ENDPOINT&gt;</pre>
+  <strong>Must return 403 Forbidden.</strong> If it succeeds, the token has Delete permission &mdash; re-mint with the correct scope before anything else uses it. This is the single guard preventing an LLM or a runaway script from destroying the asset set.</div>
 
-  <h4>4.4 &mdash; <code>ops/orders/manifest.json</code> shape</h4>
+  <h4>4.4 &mdash; The manifest pattern</h4>
+  <p>One manifest per "set of related assets" lives under <code>ops/</code>. Example for the orders tracker:</p>
   <pre>cat > ops/orders/manifest.json <<'EOF'
 {
-  "$schema": "../../scripts/manifest-schema.json",
+  "$schema": "../../scripts/asset-manifest.schema.json",
+  "bucket": "conjure-ops",
   "objects": [
     {
       "key": "orders/2026-Q2.xlsx",
-      "sha256": "REPLACE_WITH_HASH",
+      "sha256": "&lt;REPLACE_WITH_HASH&gt;",
       "size_bytes": 0,
       "uploaded_at": "2026-05-15",
       "description": "Q2 2026 testing-order tracker"
@@ -350,9 +380,39 @@ git push -u origin chore/scaffold-monorepo</pre>
   ]
 }
 EOF</pre>
-  <p>Write a tiny fetcher under <code>scripts/ops-fetch.sh</code> that resolves <code>manifest.json</code> entries against R2 by key + verifies the sha256. The fetcher reads <code>R2_OPS_*</code> from env in CI; locally, developers source from 1Password.</p>
+  <p>What lives in git: this manifest + small docs + scripts. What lives in R2: the actual <code>.xlsx</code> / <code>.glb</code> / <code>.safetensors</code> bytes. The repo never grows because of binary content.</p>
 
-  <div class="verify"><strong>Verify Phase 4:</strong> upload one test object to <code>conjure-ops</code>, reference it from <code>manifest.json</code>, run the fetcher locally with read-write credentials and confirm it pulls + checksums. With the no-delete token, <code>rm</code> returns 403.</div>
+  <h4>4.5 &mdash; The fetcher/pusher</h4>
+  <p>Two thin scripts at the repo root, both wrapping <code>prod/conjure_tech/magic/storage/object_store.py</code>:</p>
+  <pre>scripts/ops-fetch.sh &lt;manifest.json&gt;
+  # Reads manifest entries, downloads each to ./ops/&lt;path&gt;/&lt;key-basename&gt;
+  # Verifies sha256. Fails if any object missing or hash mismatch.
+  # Uses R2_OPS_* env vars in CI; locally sources from 1Password CLI (`op read`).
+
+scripts/ops-push.sh &lt;local-file&gt; &lt;manifest.json&gt;
+  # Uploads &lt;local-file&gt; to R2 with key derived from filename + content hash.
+  # Updates the manifest with the new entry. Never deletes existing entries.
+  # Will fail loudly if the R2 token has Delete permission (canary check).</pre>
+  <p>Add the manifest paths to <code>.gitignore</code>&rsquo;s asset patterns so resolved files aren&rsquo;t accidentally re-committed:</p>
+  <pre># .gitignore
+ops/**/resolved/
+ops/**/*.xlsx
+ops/**/*.glb
+ops/**/*.safetensors
+ops/**/*.mp4</pre>
+
+  <h4>4.6 &mdash; <code>.gitattributes</code> &mdash; minimal</h4>
+  <p>Without LFS, <code>.gitattributes</code> shrinks to text-handling defaults:</p>
+  <pre>* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.glb binary
+*.mp4 binary
+*.xlsx binary
+*.safetensors binary</pre>
+  <p>No <code>filter=lfs</code> lines anywhere. <code>check-added-large-files</code> (in pre-commit, Phase 5) rejects anything &gt; 1 MB at commit time &mdash; the path forward is then &ldquo;move it to R2 via <code>scripts/ops-push.sh</code>&rdquo;, not &ldquo;add an LFS pattern&rdquo;.</p>
+
+  <div class="verify"><strong>Verify Phase 4:</strong> upload a test xlsx via <code>scripts/ops-push.sh</code>, reference it from <code>ops/orders/manifest.json</code>, then in a fresh clone run <code>scripts/ops-fetch.sh ops/orders/manifest.json</code> and confirm bytes + sha256 match. With the no-delete token in CI: <code>aws s3 rm</code> returns 403. Pre-commit rejects a 2 MB file in <code>prod/</code> with a hint to use <code>ops-push.sh</code>.</div>
 </div>
 
 <!-- ====================================================== -->
@@ -383,7 +443,8 @@ pre-commit run --all-files --hook-stage commit</pre>
     <li><code>.github/workflows/ops-ci.yml</code> &mdash; unchanged.</li>
     <li><code>.github/workflows/spikes-smoke.yml</code> &mdash; unchanged.</li>
     <li><code>.github/workflows/pre-commit-fast.yml</code> &mdash; unchanged.</li>
-    <li><code>.github/workflows/lfs-pointer-vs-blob.yml</code> &mdash; useful as a one-shot sanity check, can be removed after first run.</li>
+    <li><code>.github/workflows/lfs-pointer-vs-blob.yml</code> &mdash; <strong>not needed</strong> (no LFS). Do not copy.</li>
+    <li>(new) <code>.github/workflows/r2-no-delete-check.yml</code> &mdash; daily cron that runs <code>aws s3 rm s3://conjure-ops/.canary-do-not-delete --endpoint-url=$R2_OPS_ENDPOINT</code> against the bucket using the CI credentials, asserts <code>403</code>, fails otherwise. Drift catcher for the IAM-scope invariant.</li>
   </ul>
   <p>Each workflow follows the validated pattern: always-run, inner <code>dorny/paths-filter</code> job, downstream jobs gated by its output, aggregator job using <code>if: always()</code> and emitting <code>success</code> if every needed job is <code>success</code> or <code>skipped</code>.</p>
 
@@ -443,10 +504,10 @@ EOF</pre>
   ]
 }
 EOF
-gh api -X POST repos/conjurehq/monorepo/rulesets --input /tmp/ruleset.json
+gh api -X POST repos/conjurehq/conjure/rulesets --input /tmp/ruleset.json
 # capture the JSON back into docs/agents/branch-protection.json
-RULESET_ID=$(gh api repos/conjurehq/monorepo/rulesets --jq '.[0].id')
-gh api repos/conjurehq/monorepo/rulesets/$RULESET_ID > docs/agents/branch-protection.json</pre>
+RULESET_ID=$(gh api repos/conjurehq/conjure/rulesets --jq '.[0].id')
+gh api repos/conjurehq/conjure/rulesets/$RULESET_ID > docs/agents/branch-protection.json</pre>
 
   <h4>7.3 &mdash; Land the scaffold via PR</h4>
   <p>From this point on, every change goes through a PR. Open one for the scaffold branch:</p>
@@ -481,7 +542,7 @@ updates:
     directory: "/"
     schedule: { interval: "weekly" }</pre>
 
-  <div class="verify"><strong>Verify Phase 8:</strong> within 5&ndash;10 min of merging, Dependabot opens at least one PR if any dependency is outdated. <span class="url"><a href="https://github.com/conjurehq/monorepo/pulls?q=is%3Apr+author%3Aapp%2Fdependabot">https://github.com/conjurehq/monorepo/pulls?q=is%3Apr+author%3Aapp%2Fdependabot</a></span> shows them. No PRs are opened for <code>spikes/</code> (it's not in the config).</div>
+  <div class="verify"><strong>Verify Phase 8:</strong> within 5&ndash;10 min of merging, Dependabot opens at least one PR if any dependency is outdated. <span class="url"><a href="https://github.com/conjurehq/conjure/pulls?q=is%3Apr+author%3Aapp%2Fdependabot">https://github.com/conjurehq/conjure/pulls?q=is%3Apr+author%3Aapp%2Fdependabot</a></span> shows them. No PRs are opened for <code>spikes/</code> (it's not in the config).</div>
 </div>
 
 <!-- ====================================================== -->
@@ -506,7 +567,7 @@ updates:
   <header><h2>Phase 10 &mdash; AI review pipeline (CodeRabbit + Claude bot + Chrome MCP)</h2><span class="meta">~60 min &middot; CodeRabbit install propagates ~10 min</span></header>
 
   <h4>10.1 &mdash; Install CodeRabbit</h4>
-  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/apps/coderabbitai">https://github.com/apps/coderabbitai</a></span> &rarr; <strong>Configure</strong> &rarr; install for <code>conjurehq</code> org &rarr; <strong>Only select repositories</strong> &rarr; pick <code>monorepo</code>. Confirm at <span class="url"><a href="https://github.com/organizations/conjurehq/settings/installations">https://github.com/organizations/conjurehq/settings/installations</a></span>.</p>
+  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/apps/coderabbitai">https://github.com/apps/coderabbitai</a></span> &rarr; <strong>Configure</strong> &rarr; install for <code>conjurehq</code> org &rarr; <strong>Only select repositories</strong> &rarr; pick <code>conjure</code>. Confirm at <span class="url"><a href="https://github.com/organizations/conjurehq/settings/installations">https://github.com/organizations/conjurehq/settings/installations</a></span>.</p>
 
   <h4>10.2 &mdash; <code>.coderabbit.yaml</code></h4>
   <pre>cat > .coderabbit.yaml <<'EOF'
@@ -549,7 +610,7 @@ jobs:
       - name: Run Claude Code headless review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.CLAUDE_REVIEWER_PAT }}
+          GH_TOKEN: ${{ secrets.GH_AGENT_PAT }}
         run: |
           npx -y @anthropic-ai/claude-code \
             --headless \
@@ -559,7 +620,7 @@ jobs:
 EOF
 
 cat > .github/prompts/deep-review.md <<'EOF'
-You are a senior engineer reviewing PR #{{pr_number}} on conjurehq/monorepo.
+You are a senior engineer reviewing PR #{{pr_number}} on conjurehq/conjure.
 
 1. Read the diff: `gh pr diff {{pr_number}}`.
 2. For every touched directory, walk the CLAUDE.md chain (root → tier → product → leaf), resolving @-includes.
@@ -590,7 +651,7 @@ jobs:
       - name: Run journey tests
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GH_TOKEN: ${{ secrets.CLAUDE_REVIEWER_PAT }}
+          GH_TOKEN: ${{ secrets.GH_AGENT_PAT }}
           PREVIEW_URL: ${{ steps.preview.outputs.url }}
         run: |
           npx -y @anthropic-ai/claude-code \
@@ -642,7 +703,7 @@ jobs:
 EOF</pre>
   <p>Add <code>docs-sanity</code> to the required-status-checks list <em>after</em> it&rsquo;s been advisory for two weeks:</p>
   <pre># in /tmp/ruleset.json, add "docs-sanity" to required_status_checks; re-PUT the ruleset
-gh api -X PUT repos/conjurehq/monorepo/rulesets/$RULESET_ID --input /tmp/ruleset.json</pre>
+gh api -X PUT repos/conjurehq/conjure/rulesets/$RULESET_ID --input /tmp/ruleset.json</pre>
 
   <h4>11.2 &mdash; <code>docs-drift.yml</code></h4>
   <p>Same shape, dispatcher + subagents. Starts advisory; never required.</p>
@@ -727,7 +788,7 @@ EOF</pre>
 <div class="phase" id="p14">
   <header><h2>Phase 14 &mdash; End-to-end validation against US-1..US-30</h2><span class="meta">~half a day</span></header>
 
-  <p>Replicate the validation matrix from <code>results.html</code> against the live monorepo. For each story, run the linked action and confirm the expected outcome.</p>
+  <p>Replicate the validation matrix from <code>results.html</code> against the live <code>conjurehq/conjure</code>. For each story, run the linked action and confirm the expected outcome. Note that <strong>US-12, US-13, US-14 are retired</strong> (no LFS) and replaced by US-23/US-24 plus the daily R2-no-delete canary workflow from Phase 6.</p>
 
   <table>
     <thead><tr><th>Story</th><th>Action</th><th>Expect</th></tr></thead>
@@ -739,10 +800,11 @@ EOF</pre>
       <tr><td>US-6</td><td>PR touching <code>prod/conjure_tech/</code> + <code>spikes/</code></td><td>prod review required</td></tr>
       <tr><td>US-7</td><td>Inspect spike-only PR&rsquo;s ci-gate</td><td>SUCCESS via skip</td></tr>
       <tr><td>US-8</td><td>You (sole codeowner) merge a prod PR after CI passes</td><td>merge button works without approval</td></tr>
-      <tr><td>US-9..US-14</td><td>local pre-commit + LFS round-trip on a 5 MB .mp4</td><td>per the matrix in results.html</td></tr>
+      <tr><td>US-9..US-11</td><td>local pre-commit: trailing-whitespace fires, ruff scoped to prod, 2 MB file rejected at commit</td><td>per the matrix in results.html</td></tr>
+      <tr><td>~~US-12..US-14~~</td><td>LFS round-trip stories</td><td><strong>Replaced</strong> by US-23..US-24 (R2 manifest fetch + no-delete guard). LFS stories no longer apply.</td></tr>
       <tr><td>US-17, US-18</td><td>delete an AGENTS.md symlink and try to commit</td><td>hook fails</td></tr>
       <tr><td>US-19</td><td>after merging the scaffold, wait for Dependabot</td><td>PRs for prod/* npm/pip; none for spikes/</td></tr>
-      <tr><td>US-20</td><td>submit an approving review from the conjure-reviewer bot account&rsquo;s PAT &mdash; but make it type=Bot first by switching to <code>github-actions[bot]</code> via a workflow</td><td>ai-cannot-approve fails; merge blocked</td></tr>
+      <tr><td>US-20</td><td>submit an approving review from <code>github-actions[bot]</code> (type=Bot) via a workflow using <code>GITHUB_TOKEN</code></td><td>ai-cannot-approve fails; merge blocked. <code>conjure-ops</code> is type=User so its reviews pass through.</td></tr>
       <tr><td>US-21</td><td>PR that <code>rm -rf docs/architecture/</code></td><td>docs-sanity flags with reason</td></tr>
       <tr><td>US-22</td><td>PR that edits <code>apps/web/Foo.tsx</code> while leaving the matching doc untouched</td><td>docs-drift comment lists drift</td></tr>
       <tr><td>US-23, US-24</td><td>read object via manifest; attempt to delete with CI token</td><td>read works; delete 403</td></tr>
@@ -760,12 +822,12 @@ EOF</pre>
   <header><h2>Phase 15 &mdash; Cutover and deprecate the old layout</h2><span class="meta">~1 hour + waiting period</span></header>
 
   <h4>15.1 &mdash; Update DNS / deploys</h4>
-  <p>Production deploy pipelines (Netlify, Cloudflare Workers, GHCR, Railway) currently point at <code>conjurehq/conjure</code>. Update each to point at <code>conjurehq/monorepo</code> with the right subdirectory:</p>
+  <p>Production deploy pipelines (Netlify, Cloudflare Workers, GHCR, Railway) currently point at <code>conjurehq/conjure</code>. Update each to point at <code>conjurehq/conjure</code> with the right subdirectory:</p>
   <ul>
     <li>Netlify (frontend): site settings &rarr; build: <code>cd prod/conjure_tech/apps/web && pnpm build</code>. Direct: <span class="url"><a href="https://app.netlify.com/sites">https://app.netlify.com/sites</a></span></li>
     <li>Cloudflare Workers (API): <code>wrangler.toml</code> path updated; Wrangler GitHub Action pointed at new repo. Direct: <span class="url"><a href="https://dash.cloudflare.com">https://dash.cloudflare.com</a></span> &rarr; Workers</li>
-    <li>GHCR images: build action in <code>monorepo</code> publishes <code>ghcr.io/conjurehq/conjure/api</code> (keep the image name for compatibility).</li>
-    <li>Railway: <span class="url"><a href="https://railway.app/dashboard">https://railway.app/dashboard</a></span> &rarr; service &rarr; settings &rarr; repo: <code>conjurehq/monorepo</code>, root directory: <code>prod/conjure_tech/&hellip;</code></li>
+    <li>GHCR images: build action in the new <code>conjurehq/conjure</code> publishes <code>ghcr.io/conjurehq/conjure/api</code> (image name unchanged).</li>
+    <li>Railway: <span class="url"><a href="https://railway.app/dashboard">https://railway.app/dashboard</a></span> &rarr; service &rarr; settings &rarr; repo: <code>conjurehq/conjure</code>, root directory: <code>prod/conjure_tech/&hellip;</code></li>
   </ul>
 
   <h4>15.2 &mdash; Run one prod deploy from the new repo</h4>
@@ -774,7 +836,7 @@ EOF</pre>
   <h4>15.3 &mdash; Freeze <code>conjurehq/conjure</code></h4>
   <p><span class="pill pill-ui">UI</span> Once new repo has been hot for 48 hours with no incidents:</p>
   <ul>
-    <li>Add a <code>README.md</code> banner to <code>conjurehq/conjure</code>: <em>"Moved to <a>conjurehq/monorepo &rarr; prod/conjure_tech/</a>. This repo is read-only as of 2026-MM-DD."</em></li>
+    <li>Add a <code>README.md</code> banner to <code>conjurehq/conjure</code>: <em>"Moved to <a>conjurehq/conjure &rarr; prod/conjure_tech/</a>. This repo is read-only as of 2026-MM-DD."</em></li>
     <li><span class="url"><a href="https://github.com/conjurehq/conjure/settings">https://github.com/conjurehq/conjure/settings</a></span> &rarr; bottom of the page &rarr; <strong>Archive this repository</strong>.</li>
     <li>Update internal docs / runbooks pointing at the old repo URL.</li>
   </ul>
@@ -803,7 +865,7 @@ EOF</pre>
 <h2>Open questions that need human decisions before starting</h2>
 <ol>
   <li><strong>Do we want a second human reviewer on <code>prod/</code> from day one</strong>, or accept solo-codeowner no-op for the first weeks? If second reviewer is added, every prod PR needs their approval &mdash; slower but safer.</li>
-  <li><strong>Is <code>conjurehq/monorepo</code> the right name</strong>, or should we name it <code>conjurehq/conjure-v2</code> / <code>conjurehq/platform</code>? Renaming later is cheap but breaks bookmarks.</li>
+  <li><strong>Is <code>conjurehq/conjure</code> the right name</strong>, or should we name it <code>conjurehq/conjure-v2</code> / <code>conjurehq/platform</code>? Renaming later is cheap but breaks bookmarks.</li>
   <li><strong>Migrate open PRs and issues from <code>conjurehq/conjure</code>?</strong> GitHub has no native transfer; need a script (<code>gh issue list | xargs gh issue create</code>). Decide whether the cost is worth it for outstanding work.</li>
   <li><strong>Repository visibility</strong>: stay private (default) or open-source after migration? If open-sourcing, LFS bandwidth on forks becomes a real cost &mdash; switch to R2 for large assets first.</li>
 </ol>
