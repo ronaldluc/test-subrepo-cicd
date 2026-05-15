@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Monorepo migration — step-by-step plan</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    :root {
+      --bg: #fafaf7; --fg: #1a1a1a; --muted: #666;
+      --pass: #137a3e; --pass-bg: #e6f6ec;
+      --warn: #b06a00; --warn-bg: #fff3df;
+      --bad: #b8302b;  --bad-bg: #fbe7e6;
+      --note: #234e8a; --note-bg: #e9f0fa;
+      --line: #d8d8d4; --code-bg: #efeee8;
+      --card-bg: white;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: var(--fg); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; }
+    main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 100px; }
+    h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.02em; }
+    h2 { font-size: 22px; margin: 38px 0 12px; padding-bottom: 6px; border-bottom: 2px solid var(--line); letter-spacing: -0.01em; }
+    h3 { font-size: 17px; margin: 18px 0 6px; }
+    h4 { font-size: 14px; margin: 14px 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+    p.lede { color: var(--muted); margin: 0 0 22px; font-size: 16px; }
+    code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); border-radius: 3px; }
+    code { padding: 1px 5px; font-size: 13px; word-break: break-word; }
+    pre { padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+    a { color: var(--note); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0 14px; background: var(--card-bg); }
+    th, td { text-align: left; padding: 8px 10px; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { background: white; font-weight: 600; }
+    tr:hover td { background: #f6f5f0; }
+    .nav { font-size: 13px; color: var(--muted); margin: 8px 0 28px; line-height: 1.9; }
+    .nav a { margin-right: 12px; }
+    .phase { background: var(--card-bg); border: 1px solid var(--line); border-left: 4px solid var(--note); border-radius: 6px; padding: 16px 22px; margin: 18px 0; }
+    .phase header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin: 0 0 10px; }
+    .phase h2 { border: none; padding: 0; margin: 0; flex: 1 1 auto; font-size: 19px; }
+    .phase .meta { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .url { display: inline-block; word-break: break-all; }
+    .url a { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; background: var(--code-bg); padding: 2px 6px; border-radius: 3px; }
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 3px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+    .pill-cli { background: var(--note-bg); color: var(--note); }
+    .pill-ui  { background: var(--warn-bg); color: var(--warn); }
+    .pill-ok  { background: var(--pass-bg); color: var(--pass); }
+    .pill-bad { background: var(--bad-bg); color: var(--bad); }
+    .pre-flight { background: #fffbe8; border: 1px solid #e3d36a; border-left: 4px solid #b59f1f; border-radius: 6px; padding: 14px 22px; margin: 18px 0; }
+    .verify { background: var(--pass-bg); border-left: 4px solid var(--pass); border-radius: 4px; padding: 10px 16px; margin: 12px 0; font-size: 14px; }
+    .danger { background: var(--bad-bg); border-left: 4px solid var(--bad); border-radius: 4px; padding: 10px 16px; margin: 12px 0; font-size: 14px; }
+    .step { margin: 10px 0; }
+    .step .label { font-weight: 600; color: var(--accent); }
+    ol.steps { padding-left: 22px; }
+    ol.steps > li { margin: 10px 0; }
+    footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 18px; }
+    .toc { background: var(--card-bg); border: 1px solid var(--line); border-radius: 6px; padding: 14px 22px; margin: 18px 0; font-size: 14px; }
+    .toc ol { padding-left: 22px; margin: 8px 0; }
+    .toc li { margin: 4px 0; }
+    .placeholder { background: #fff3df; padding: 1px 5px; border-radius: 3px; font-style: italic; font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+
+<h1>Monorepo migration &mdash; step-by-step plan</h1>
+<p class="lede">End-to-end procedure for taking <code>conjurehq/conjure</code> and turning it into a per-path-protected monorepo per the design in <a href="results.html">results.html</a> and <a href="first-principles.html">first-principles.html</a>. Every step lists the exact command, the exact GitHub URL, and what to verify before moving on.</p>
+
+<p>Variable placeholders used below: <span class="placeholder">&lt;ORG&gt;</span> = <code>conjurehq</code>, <span class="placeholder">&lt;REPO&gt;</span> = <code>monorepo</code> (suggested; you can keep <code>conjure</code> if you want to restructure in place), <span class="placeholder">&lt;USER&gt;</span> = <code>ronaldluc</code>.</p>
+
+<div class="toc">
+<h3 style="margin-top:4px;">Phases</h3>
+<ol>
+  <li><a href="#preflight">Pre-flight decisions &amp; account inventory</a></li>
+  <li><a href="#p0">Phase 0 &mdash; Bot accounts and PATs</a></li>
+  <li><a href="#p1">Phase 1 &mdash; Create the empty monorepo on GitHub</a></li>
+  <li><a href="#p2">Phase 2 &mdash; Import conjure into <code>prod/conjure_tech/</code> with full history</a></li>
+  <li><a href="#p3">Phase 3 &mdash; Scaffold directory tree + CLAUDE.md hierarchy</a></li>
+  <li><a href="#p4">Phase 4 &mdash; LFS, <code>.gitattributes</code>, R2 setup</a></li>
+  <li><a href="#p5">Phase 5 &mdash; Pre-commit (fast + heavy)</a></li>
+  <li><a href="#p6">Phase 6 &mdash; CI workflows + skip-as-success gate</a></li>
+  <li><a href="#p7">Phase 7 &mdash; CODEOWNERS + branch ruleset</a></li>
+  <li><a href="#p8">Phase 8 &mdash; Dependabot</a></li>
+  <li><a href="#p9">Phase 9 &mdash; ai-cannot-approve workflow</a></li>
+  <li><a href="#p10">Phase 10 &mdash; AI review pipeline (CodeRabbit + Claude bot + Chrome MCP)</a></li>
+  <li><a href="#p11">Phase 11 &mdash; Docs protection (sanity + drift)</a></li>
+  <li><a href="#p12">Phase 12 &mdash; Carve <code>analytics</code> out of <code>conjure_tech</code></a></li>
+  <li><a href="#p13">Phase 13 &mdash; Per-product <code>make test</code> + root dispatcher</a></li>
+  <li><a href="#p14">Phase 14 &mdash; End-to-end validation against US-1..US-30</a></li>
+  <li><a href="#p15">Phase 15 &mdash; Cutover &amp; deprecate the old layout</a></li>
+</ol>
+</div>
+
+<p>Time budget: 2.5&ndash;3 focused days of work for one engineer. Phases 0, 4, 10 each have asynchronous waits (token issuance, R2 propagation, CodeRabbit install).</p>
+
+<h2 id="preflight">Pre-flight &mdash; decide and inventory</h2>
+<div class="pre-flight">
+<h3>Decisions you make before anything else</h3>
+<table>
+  <thead><tr><th>Decision</th><th>Choices</th><th>Default</th></tr></thead>
+  <tbody>
+    <tr><td>Repo strategy</td><td>(a) new repo <code>conjurehq/monorepo</code>, (b) restructure <code>conjurehq/conjure</code> in place</td><td><strong>(a)</strong> &mdash; cleaner; old repo becomes archive</td></tr>
+    <tr><td>History preservation</td><td>full git history vs. start fresh</td><td><strong>full</strong> &mdash; <code>git filter-repo</code> moves files under <code>prod/conjure_tech/</code> while keeping history</td></tr>
+    <tr><td>Initial CODEOWNERS members</td><td>just <code>@ronaldluc</code>, or add &ge; 1 peer</td><td>start solo; add &ge; 1 peer per protected path before promoting Layer 2 docs-drift to required</td></tr>
+    <tr><td>R2 bucket layout</td><td>existing <code>conjure-artifacts</code> bucket, or new <code>conjure-ops</code> bucket</td><td><strong>new</strong> &mdash; isolates the no-delete IAM token from prod workloads</td></tr>
+    <tr><td>Default branch name</td><td><code>main</code> vs <code>master</code></td><td><code>main</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Account / asset inventory</h3>
+<ul>
+  <li>GitHub org-admin on <span class="placeholder">&lt;ORG&gt;</span></li>
+  <li>Fine-grained PAT with <em>Administration, Pull requests, Actions, Contents, Metadata</em> = write on the new repo</li>
+  <li>Cloudflare account with R2 enabled, ability to mint scoped API tokens</li>
+  <li>Anthropic API key for the Claude review bot (separate from your interactive Claude Code use)</li>
+  <li>CodeRabbit account &mdash; will install as a GitHub App on the repo</li>
+  <li>Local: <code>gh</code>, <code>git</code> &ge; 2.40, <code>git-lfs</code>, <code>git-filter-repo</code> (<code>brew install git-filter-repo</code> / <code>pipx install git-filter-repo</code>), <code>pre-commit</code></li>
+</ul>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p0">
+  <header><h2>Phase 0 &mdash; Bot accounts and PATs</h2><span class="meta">~45 min &middot; do this first; token issuance is bursty</span></header>
+
+  <h4>0.1 &mdash; Create the Claude review bot user account</h4>
+  <ol class="steps">
+    <li>Sign out of your personal GitHub account in a private browser window.</li>
+    <li>Go to <span class="url"><a href="https://github.com/join">https://github.com/join</a></span> and create a new user. Suggested handle: <code>conjure-reviewer</code>. Use a dedicated email (e.g. <code>reviewer-bot@<your-domain></code>).</li>
+    <li>Verify the email. Enable 2FA (required for org membership).</li>
+    <li>Invite the bot to the org: <span class="url"><a href="https://github.com/orgs/conjurehq/people">https://github.com/orgs/conjurehq/people</a></span> &rarr; <strong>Invite member</strong>. Set role: <strong>Member</strong> (not Owner).</li>
+    <li>From the bot account, accept the invite. <span class="pill pill-bad">Verify:</span> <code>gh api users/conjure-reviewer --jq .type</code> returns <code>"User"</code> (not <code>"Bot"</code>). This is what lets its comments pass the ai-cannot-approve guard.</li>
+  </ol>
+
+  <h4>0.2 &mdash; Mint PATs</h4>
+  <p>Two PATs needed. Generate at <span class="url"><a href="https://github.com/settings/personal-access-tokens">https://github.com/settings/personal-access-tokens</a></span>.</p>
+  <table>
+    <thead><tr><th>PAT</th><th>Owned by</th><th>Permissions on &lt;REPO&gt;</th></tr></thead>
+    <tbody>
+      <tr><td><code>MIGRATION_PAT</code></td><td>your account</td><td>Administration: write, Actions: write, Contents: write, Pull requests: write, Metadata: read, Workflows: write</td></tr>
+      <tr><td><code>CLAUDE_REVIEWER_PAT</code></td><td>conjure-reviewer (bot account)</td><td>Contents: read, Pull requests: write, Metadata: read</td></tr>
+    </tbody>
+  </table>
+  <p>Store both in 1Password under <code>Dev Secrets &rarr; monorepo migration</code>. Mark expiry 90 days.</p>
+
+  <h4>0.3 &mdash; Anthropic API key</h4>
+  <p><span class="url"><a href="https://console.anthropic.com/settings/keys">https://console.anthropic.com/settings/keys</a></span> &rarr; Create key &rarr; name it <code>conjure-claude-reviewer</code>. Add it to 1Password.</p>
+
+  <div class="verify"><strong>Verify Phase 0:</strong> all three secrets in 1Password, bot account is org member, <code>gh api users/conjure-reviewer --jq .type</code> returns <code>"User"</code>.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p1">
+  <header><h2>Phase 1 &mdash; Create the empty monorepo</h2><span class="meta">~10 min</span></header>
+
+  <h4>1.1 &mdash; Create the repo</h4>
+  <p><span class="pill pill-ui">UI</span> Visit <span class="url"><a href="https://github.com/organizations/conjurehq/repositories/new">https://github.com/organizations/conjurehq/repositories/new</a></span> and fill in:</p>
+  <ul>
+    <li>Repository name: <code>monorepo</code></li>
+    <li>Owner: <code>conjurehq</code></li>
+    <li>Visibility: <strong>Private</strong></li>
+    <li><strong>Do NOT</strong> initialise with README, .gitignore, or licence &mdash; we want a fully empty repo to import history into.</li>
+  </ul>
+
+  <h4>1.2 &mdash; Enable LFS</h4>
+  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/monorepo/settings/lfs">https://github.com/conjurehq/monorepo/settings/lfs</a></span> &rarr; flip on. Usually on by default on org plans; double-check.</p>
+
+  <h4>1.3 &mdash; Disable wiki, projects, discussions you don't use</h4>
+  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/monorepo/settings">https://github.com/conjurehq/monorepo/settings</a></span> &rarr; <em>Features</em> section &rarr; uncheck whatever you don't use.</p>
+
+  <h4>1.4 &mdash; Set default branch + actions permissions</h4>
+  <p><span class="pill pill-ui">UI</span></p>
+  <ul>
+    <li><span class="url"><a href="https://github.com/conjurehq/monorepo/settings/actions">https://github.com/conjurehq/monorepo/settings/actions</a></span> &rarr; <em>Workflow permissions</em>: <strong>Read and write permissions</strong>. Tick <strong>Allow GitHub Actions to create and approve pull requests</strong>. (We will block bot approvals via the workflow guard, but this gives us flexibility for Dependabot auto-merge later.)</li>
+  </ul>
+
+  <h4>1.5 &mdash; Store secrets</h4>
+  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/conjurehq/monorepo/settings/secrets/actions">https://github.com/conjurehq/monorepo/settings/secrets/actions</a></span> &rarr; <strong>New repository secret</strong>, four times:</p>
+  <table>
+    <thead><tr><th>Name</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>CLAUDE_REVIEWER_PAT</code></td><td>from Phase 0.2 (bot account PAT)</td></tr>
+      <tr><td><code>ANTHROPIC_API_KEY</code></td><td>from Phase 0.3</td></tr>
+      <tr><td><code>R2_OPS_ACCESS_KEY</code></td><td>filled in Phase 4 once R2 is up</td></tr>
+      <tr><td><code>R2_OPS_SECRET_KEY</code></td><td>filled in Phase 4 once R2 is up</td></tr>
+    </tbody>
+  </table>
+
+  <div class="verify"><strong>Verify Phase 1:</strong> <code>gh repo view conjurehq/monorepo</code> succeeds; <code>gh api repos/conjurehq/monorepo/actions/secrets --jq '.secrets[].name'</code> lists the two secrets you have so far.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p2">
+  <header><h2>Phase 2 &mdash; Import conjure into <code>prod/conjure_tech/</code></h2><span class="meta">~30 min &middot; the only step where you can lose history if you fat-finger</span></header>
+
+  <h4>2.1 &mdash; Make a working copy of conjure</h4>
+  <pre>cd /home/pyronaut/work
+git clone git@github.com:conjurehq/conjure.git conjure-import
+cd conjure-import
+git fetch --all --tags
+# sanity
+git log --oneline | wc -l   # should match conjurehq/conjure's commit count</pre>
+
+  <h4>2.2 &mdash; Move every file under <code>prod/conjure_tech/</code> with full history</h4>
+  <p><code>git filter-repo</code> rewrites every commit so paths are prefixed. Order matters: run only on the working copy, never on a checkout that other things share.</p>
+  <pre>git filter-repo --to-subdirectory-filter prod/conjure_tech
+# verify
+git log --oneline | head -3
+find . -maxdepth 3 -not -path "./.git/*" | head</pre>
+  <p>Output should show every old top-level file (e.g. <code>package.json</code>) now living at <code>prod/conjure_tech/package.json</code>.</p>
+
+  <div class="danger"><strong>Danger:</strong> <code>filter-repo</code> rewrites history. Don&rsquo;t do this in your daily-driver checkout. The fresh <code>conjure-import</code> clone is throwaway.</div>
+
+  <h4>2.3 &mdash; Push to the new monorepo</h4>
+  <pre>git remote remove origin
+git remote add origin git@github.com:conjurehq/monorepo.git
+git push -u origin main   # ruleset is not on yet; this works</pre>
+  <p>Push will be slow &mdash; the full history is transferring. Expect 5&ndash;15 min depending on repo size.</p>
+
+  <div class="verify"><strong>Verify Phase 2:</strong> visit <span class="url"><a href="https://github.com/conjurehq/monorepo/tree/main/prod/conjure_tech">https://github.com/conjurehq/monorepo/tree/main/prod/conjure_tech</a></span> and confirm the conjure source tree is there. <code>git log</code> shows the original conjure history with paths now prefixed.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p3">
+  <header><h2>Phase 3 &mdash; Scaffold directory tree + CLAUDE.md hierarchy</h2><span class="meta">~45 min</span></header>
+
+  <h4>3.1 &mdash; Working branch</h4>
+  <pre>cd /home/pyronaut/work/conjure-import
+git switch -c chore/scaffold-monorepo</pre>
+
+  <h4>3.2 &mdash; Create empty tiers</h4>
+  <pre>mkdir -p prod/analytics prod/conjure_weddings prod/shared
+mkdir -p ops/orders ops/tests
+mkdir -p spikes
+mkdir -p docs/company docs/architecture docs/agents docs/orders
+mkdir -p scripts .github/workflows .github/prompts</pre>
+
+  <h4>3.3 &mdash; Root files</h4>
+  <p>Copy the validated files from <code>test-subrepo-cicd</code> as a starting point. From that repo:</p>
+  <pre># in conjure-import:
+cp /home/pyronaut/work/test-subrepo-cicd/CLAUDE.md ./CLAUDE.md
+cp /home/pyronaut/work/test-subrepo-cicd/.pre-commit-config.yaml ./
+cp /home/pyronaut/work/test-subrepo-cicd/.gitattributes ./
+cp /home/pyronaut/work/test-subrepo-cicd/scripts/check-agents-symlinks.sh scripts/
+chmod +x scripts/check-agents-symlinks.sh
+cp /home/pyronaut/work/test-subrepo-cicd/.github/CODEOWNERS .github/
+cp /home/pyronaut/work/test-subrepo-cicd/.github/dependabot.yml .github/
+cp /home/pyronaut/work/test-subrepo-cicd/.github/workflows/*.yml .github/workflows/
+cp /home/pyronaut/work/test-subrepo-cicd/docs/company/principles.md docs/company/
+cp /home/pyronaut/work/test-subrepo-cicd/docs/architecture/*.md docs/architecture/
+cp /home/pyronaut/work/test-subrepo-cicd/docs/agents/*.md docs/agents/</pre>
+  <p>Edit each copied file to remove sentinel placeholders and replace <code>prod/mock-app/*</code> references with the real product folder names.</p>
+
+  <h4>3.4 &mdash; Per-tier CLAUDE.md</h4>
+  <p>Write the per-tier files. Telegraphic, ~10 lines each, with <code>@-include</code> chains pointing back at the docs.</p>
+  <pre># Root CLAUDE.md is already copied. Per tier:
+cat > prod/CLAUDE.md <<'EOF'
+# Prod tier scope.
+@../docs/company/principles.md
+Production. CODEOWNER review + prod-ci required for all subfolders.
+EOF
+
+cat > prod/conjure_tech/CLAUDE.md <<'EOF'
+# conjure.tech app scope.
+@../../docs/architecture/conjure_tech.md
+@../../docs/company/principles.md
+EOF
+
+cat > prod/analytics/CLAUDE.md <<'EOF'
+# Analytics product scope.
+@../../docs/architecture/analytics.md
+@../../docs/company/principles.md
+EOF
+
+cat > ops/CLAUDE.md <<'EOF'
+# Ops scope.
+@../docs/company/principles.md
+Operational scripts, orders manifest, tests. No prod code; no production guarantees.
+EOF
+
+cat > spikes/CLAUDE.md <<'EOF'
+# Spikes scope.
+Throwaway. Each developer works under spikes/<username>/<topic>/.
+Never run `git clean -fd` without `git clean -nd` first.
+EOF
+
+cat > docs/CLAUDE.md <<'EOF'
+# docs scope.
+Load-bearing context for agents. Every removal needs an explicit "why" in the commit message.
+EOF</pre>
+
+  <p>Write the architecture docs (initial stubs — they get fleshed out per product over time):</p>
+  <pre>cat > docs/architecture/conjure_tech.md <<'EOF'
+# conjure.tech architecture
+
+(Migrated from the old conjure repo. apps/web is the React app, apps/api is the Workers edge API, magic is the Python AI backend.)
+EOF
+# Similar stub for analytics.md (empty for now, filled in Phase 12)
+echo "# Analytics architecture (carved out in Phase 12)" > docs/architecture/analytics.md</pre>
+
+  <h4>3.5 &mdash; AGENTS.md symlinks at every CLAUDE.md</h4>
+  <pre>find . -name CLAUDE.md -not -path "./.git/*" -not -path "*/node_modules/*" \
+   -execdir ln -sf CLAUDE.md AGENTS.md \;
+# Verify
+find . -name AGENTS.md -not -path "./.git/*" -not -path "*/node_modules/*" -ls</pre>
+
+  <h4>3.6 &mdash; Commit and push the scaffold branch</h4>
+  <pre>git add -A
+git commit -m "scaffold: tier directories + CLAUDE.md hierarchy"
+git push -u origin chore/scaffold-monorepo</pre>
+
+  <div class="verify"><strong>Verify Phase 3:</strong> <code>find . -name CLAUDE.md -not -path "*/node_modules/*"</code> shows files at root, prod/, prod/&lt;product&gt;/, ops/, spikes/, docs/. Every one has a sibling AGENTS.md symlink (<code>ls -la</code> shows <code>-&gt; CLAUDE.md</code>).</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p4">
+  <header><h2>Phase 4 &mdash; LFS, <code>.gitattributes</code>, R2 setup</h2><span class="meta">~60 min &middot; includes async wait for Cloudflare token propagation (~5 min)</span></header>
+
+  <h4>4.1 &mdash; LFS patterns</h4>
+  <p>The <code>.gitattributes</code> copied in Phase 3.3 already routes <code>*.mp4 *.mkv *.glb *.safetensors</code> to LFS. Add anything else you currently version that&rsquo;s &gt; 2 MB and isn&rsquo;t text. Suggested additions for conjure:</p>
+  <pre>*.psd     filter=lfs diff=lfs merge=lfs -text
+*.sketch  filter=lfs diff=lfs merge=lfs -text
+*.fig     filter=lfs diff=lfs merge=lfs -text
+*.pkl     filter=lfs diff=lfs merge=lfs -text
+*.onnx    filter=lfs diff=lfs merge=lfs -text</pre>
+
+  <h4>4.2 &mdash; Create the R2 ops bucket</h4>
+  <p><span class="pill pill-ui">UI</span> Cloudflare dashboard &rarr; R2 &rarr; <strong>Create bucket</strong>. Name: <code>conjure-ops</code>. Same account/region as the existing <code>conjure-artifacts</code> bucket. Direct URL: <span class="url"><a href="https://dash.cloudflare.com">https://dash.cloudflare.com</a></span> &rarr; R2 Object Storage &rarr; Create bucket.</p>
+
+  <h4>4.3 &mdash; Scoped API token for CI (no Delete)</h4>
+  <p><span class="pill pill-ui">UI</span> R2 &rarr; <strong>Manage API Tokens</strong> &rarr; <strong>Create API Token</strong>:</p>
+  <ul>
+    <li>Name: <code>monorepo-ops-rw-no-delete</code></li>
+    <li>Permissions: <strong>Object Read &amp; Write</strong> (NOT Admin Read &amp; Write)</li>
+    <li>Buckets: <code>conjure-ops</code> only</li>
+    <li>TTL: 1 year</li>
+  </ul>
+  <p>Save the access key, secret key, and S3 endpoint URL. Add them to repo secrets (Phase 1.5) as <code>R2_OPS_ACCESS_KEY</code>, <code>R2_OPS_SECRET_KEY</code>, <code>R2_OPS_ENDPOINT</code>.</p>
+
+  <div class="danger"><strong>Critical check:</strong> from a shell with those credentials, run <code>aws s3 rm s3://conjure-ops/test-object --endpoint-url=&lt;R2_ENDPOINT&gt;</code>. It should fail with <strong>403 Forbidden</strong>. If it succeeds, the token has Delete permission and you need to re-mint it with the right scope.</div>
+
+  <h4>4.4 &mdash; <code>ops/orders/manifest.json</code> shape</h4>
+  <pre>cat > ops/orders/manifest.json <<'EOF'
+{
+  "$schema": "../../scripts/manifest-schema.json",
+  "objects": [
+    {
+      "key": "orders/2026-Q2.xlsx",
+      "sha256": "REPLACE_WITH_HASH",
+      "size_bytes": 0,
+      "uploaded_at": "2026-05-15",
+      "description": "Q2 2026 testing-order tracker"
+    }
+  ]
+}
+EOF</pre>
+  <p>Write a tiny fetcher under <code>scripts/ops-fetch.sh</code> that resolves <code>manifest.json</code> entries against R2 by key + verifies the sha256. The fetcher reads <code>R2_OPS_*</code> from env in CI; locally, developers source from 1Password.</p>
+
+  <div class="verify"><strong>Verify Phase 4:</strong> upload one test object to <code>conjure-ops</code>, reference it from <code>manifest.json</code>, run the fetcher locally with read-write credentials and confirm it pulls + checksums. With the no-delete token, <code>rm</code> returns 403.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p5">
+  <header><h2>Phase 5 &mdash; Pre-commit (fast + heavy)</h2><span class="meta">~20 min</span></header>
+
+  <h4>5.1 &mdash; Local install</h4>
+  <pre>pre-commit install                 # installs .git/hooks/pre-commit
+pre-commit run --all-files --hook-stage commit</pre>
+  <p>Expect failures on the first run (the import has accumulated lint debt). Fix or whitelist them. For <code>ruff</code> on <code>prod/conjure_tech/</code>, add per-file ignores to <code>prod/conjure_tech/pyproject.toml</code> if there&rsquo;s a long tail.</p>
+
+  <h4>5.2 &mdash; Update heavy-stage scope</h4>
+  <p>In <code>.pre-commit-config.yaml</code>, the heavy stage&rsquo;s <code>files: ^prod/</code> already scopes to the prod tier. Add <code>eslint</code> with <code>files: ^prod/.*\.(ts|tsx|js|jsx)$</code> if you want the same coverage on the frontend side. Mirror the same hook set as a CI workflow (already in place from Phase 3).</p>
+
+  <h4>5.3 &mdash; Symlink hook</h4>
+  <p><code>scripts/check-agents-symlinks.sh</code> is already wired into <code>.pre-commit-config.yaml</code> as a local repo hook. Confirm by deleting one AGENTS.md and trying to commit; the hook should fail.</p>
+
+  <div class="verify"><strong>Verify Phase 5:</strong> <code>pre-commit run --all-files</code> passes after fix-up. <code>git commit</code> a file with trailing whitespace gets blocked/auto-fixed. A 2 MB random binary in <code>prod/</code> is rejected.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p6">
+  <header><h2>Phase 6 &mdash; CI workflows + skip-as-success gate</h2><span class="meta">~30 min</span></header>
+
+  <p>The workflows copied in Phase 3.3 are the validated set. Adjust paths for the real product names:</p>
+  <ul>
+    <li><code>.github/workflows/prod-ci.yml</code> &mdash; rename the <code>changes</code> filter to: <code>conjure_tech: ['prod/conjure_tech/**']</code>, <code>analytics: ['prod/analytics/**']</code>, <code>weddings: ['prod/conjure_weddings/**']</code>. Use a matrix in the lint job keyed by which product changed.</li>
+    <li><code>.github/workflows/ops-ci.yml</code> &mdash; unchanged.</li>
+    <li><code>.github/workflows/spikes-smoke.yml</code> &mdash; unchanged.</li>
+    <li><code>.github/workflows/pre-commit-fast.yml</code> &mdash; unchanged.</li>
+    <li><code>.github/workflows/lfs-pointer-vs-blob.yml</code> &mdash; useful as a one-shot sanity check, can be removed after first run.</li>
+  </ul>
+  <p>Each workflow follows the validated pattern: always-run, inner <code>dorny/paths-filter</code> job, downstream jobs gated by its output, aggregator job using <code>if: always()</code> and emitting <code>success</code> if every needed job is <code>success</code> or <code>skipped</code>.</p>
+
+  <div class="verify"><strong>Verify Phase 6:</strong> push a branch that only changes <code>spikes/</code>. Open a PR. All required status checks (<code>ci-gate</code>, <code>ops-gate</code>, <code>pass</code>) report <strong>green via skip-as-success</strong>. <code>prod-ci / lint</code> shows as <code>skipped</code>.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p7">
+  <header><h2>Phase 7 &mdash; CODEOWNERS + branch ruleset</h2><span class="meta">~20 min</span></header>
+
+  <h4>7.1 &mdash; CODEOWNERS</h4>
+  <pre>cat > .github/CODEOWNERS <<'EOF'
+prod/conjure_tech/**       @ronaldluc
+prod/analytics/**          @ronaldluc
+prod/conjure_weddings/**   @ronaldluc
+prod/shared/**             @ronaldluc
+.github/**                 @ronaldluc
+docs/agents/**             @ronaldluc
+EOF</pre>
+  <p>Note the deliberate omission of <code>ops/</code>, <code>spikes/</code>, generic <code>docs/</code>. Those don&rsquo;t need codeowner review.</p>
+
+  <h4>7.2 &mdash; Apply the ruleset</h4>
+  <p>From a shell with <code>MIGRATION_PAT</code> in <code>gh auth</code>:</p>
+  <pre>cat > /tmp/ruleset.json <<'EOF'
+{
+  "name": "main-protection",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "required_linear_history" },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "required_status_checks": [
+          { "context": "ci-gate" },
+          { "context": "ops-gate" },
+          { "context": "pass" }
+        ],
+        "strict_required_status_checks_policy": false
+      }
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "require_code_owner_review": true,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "allowed_merge_methods": ["squash", "rebase"]
+      }
+    }
+  ]
+}
+EOF
+gh api -X POST repos/conjurehq/monorepo/rulesets --input /tmp/ruleset.json
+# capture the JSON back into docs/agents/branch-protection.json
+RULESET_ID=$(gh api repos/conjurehq/monorepo/rulesets --jq '.[0].id')
+gh api repos/conjurehq/monorepo/rulesets/$RULESET_ID > docs/agents/branch-protection.json</pre>
+
+  <h4>7.3 &mdash; Land the scaffold via PR</h4>
+  <p>From this point on, every change goes through a PR. Open one for the scaffold branch:</p>
+  <pre>gh pr create --base main --head chore/scaffold-monorepo \
+   --title "scaffold: monorepo tier structure + protections" \
+   --body "First PR after ruleset. Validates the gate works end to end."</pre>
+  <p>Self-merge: with you as sole codeowner of all touched paths, the rule no-ops and the merge button lights up once CI passes.</p>
+
+  <div class="verify"><strong>Verify Phase 7:</strong> from a fresh clone, try <code>git push --force origin main</code> &rarr; rejected. Try <code>git push origin main</code> directly (after a local commit) &rarr; rejected with <em>&ldquo;Changes must be made through a pull request&rdquo;</em>. Open a PR touching <code>prod/conjure_tech/&hellip;</code> as a different account &rarr; review-required banner appears.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p8">
+  <header><h2>Phase 8 &mdash; Dependabot</h2><span class="meta">~10 min</span></header>
+
+  <p><code>.github/dependabot.yml</code> needs to enumerate every package-ecosystem root inside <code>prod/</code> and <code>ops/</code>. For the current conjure shape:</p>
+  <pre>version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/prod/conjure_tech"
+    schedule: { interval: "daily" }
+  - package-ecosystem: "npm"
+    directory: "/prod/conjure_tech/apps/api"
+    schedule: { interval: "daily" }
+  - package-ecosystem: "npm"
+    directory: "/prod/conjure_tech/apps/web"
+    schedule: { interval: "daily" }
+  - package-ecosystem: "pip"
+    directory: "/prod/conjure_tech/magic"
+    schedule: { interval: "daily" }
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule: { interval: "weekly" }</pre>
+
+  <div class="verify"><strong>Verify Phase 8:</strong> within 5&ndash;10 min of merging, Dependabot opens at least one PR if any dependency is outdated. <span class="url"><a href="https://github.com/conjurehq/monorepo/pulls?q=is%3Apr+author%3Aapp%2Fdependabot">https://github.com/conjurehq/monorepo/pulls?q=is%3Apr+author%3Aapp%2Fdependabot</a></span> shows them. No PRs are opened for <code>spikes/</code> (it's not in the config).</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p9">
+  <header><h2>Phase 9 &mdash; ai-cannot-approve workflow</h2><span class="meta">~10 min</span></header>
+
+  <p>Already copied in Phase 3.3. Confirm the file at <code>.github/workflows/ai-cannot-approve.yml</code> matches the validated version:</p>
+  <ol>
+    <li>Triggers on <code>pull_request_review: types: [submitted]</code></li>
+    <li>Job gated by <code>if: github.event.review.state == 'approved'</code></li>
+    <li>Looks up <code>users/&lt;reviewer&gt;.type</code> via <code>gh api</code></li>
+    <li>Fails if type == <code>Bot</code></li>
+  </ol>
+
+  <p>This workflow is intentionally <strong>not</strong> in the required-status-checks list, because it only runs when a review is submitted and the gate is "fail if Bot approves". A required check that doesn&rsquo;t run for non-review pushes would break merge.</p>
+
+  <div class="verify"><strong>Verify Phase 9:</strong> later in Phase 14 (US-20 live test), simulate a bot approval by submitting a review via the bot account&rsquo;s PAT &rarr; workflow fails &rarr; merge blocked.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p10">
+  <header><h2>Phase 10 &mdash; AI review pipeline (CodeRabbit + Claude bot + Chrome MCP)</h2><span class="meta">~60 min &middot; CodeRabbit install propagates ~10 min</span></header>
+
+  <h4>10.1 &mdash; Install CodeRabbit</h4>
+  <p><span class="pill pill-ui">UI</span> <span class="url"><a href="https://github.com/apps/coderabbitai">https://github.com/apps/coderabbitai</a></span> &rarr; <strong>Configure</strong> &rarr; install for <code>conjurehq</code> org &rarr; <strong>Only select repositories</strong> &rarr; pick <code>monorepo</code>. Confirm at <span class="url"><a href="https://github.com/organizations/conjurehq/settings/installations">https://github.com/organizations/conjurehq/settings/installations</a></span>.</p>
+
+  <h4>10.2 &mdash; <code>.coderabbit.yaml</code></h4>
+  <pre>cat > .coderabbit.yaml <<'EOF'
+language: en-US
+tone: terse
+reviews:
+  profile: assertive
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/_research/**"
+    - "!**/dist/**"
+  path_instructions:
+    - path: "prod/**"
+      instructions: |
+        Strict. Cite the CLAUDE.md chain. Flag any divergence from
+        docs/architecture/<product>.md.
+    - path: "spikes/**"
+      instructions: |
+        Lenient. Comment only on safety issues (secrets, large files).
+chat:
+  auto_reply: false
+EOF</pre>
+
+  <h4>10.3 &mdash; Claude deep-review workflow</h4>
+  <pre>cat > .github/workflows/claude-deep-review.yml <<'EOF'
+name: claude-deep-review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  pull-requests: write
+  contents: read
+jobs:
+  review:
+    if: '! github.event.pull_request.draft'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, lfs: true }
+      - name: Run Claude Code headless review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.CLAUDE_REVIEWER_PAT }}
+        run: |
+          npx -y @anthropic-ai/claude-code \
+            --headless \
+            --prompt-file .github/prompts/deep-review.md \
+            --max-cost-usd 1.50 \
+            --pr ${{ github.event.pull_request.number }}
+EOF
+
+cat > .github/prompts/deep-review.md <<'EOF'
+You are a senior engineer reviewing PR #{{pr_number}} on conjurehq/monorepo.
+
+1. Read the diff: `gh pr diff {{pr_number}}`.
+2. For every touched directory, walk the CLAUDE.md chain (root → tier → product → leaf), resolving @-includes.
+3. Read every architecture doc referenced.
+4. Produce ONE PR comment with sections: Critical, Suggestions, Questions for the author.
+5. Never APPROVE or REQUEST_CHANGES — comments only.
+EOF</pre>
+
+  <h4>10.4 &mdash; Chrome MCP journey-test workflow</h4>
+  <p>Wire only for PRs touching the frontend (or labelled <code>e2e</code>). Sketch:</p>
+  <pre>cat > .github/workflows/journey-test.yml <<'EOF'
+name: journey-test
+on:
+  pull_request:
+    paths: ['prod/conjure_tech/apps/web/**']
+permissions:
+  pull-requests: write
+  contents: read
+jobs:
+  journey:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for Netlify preview
+        # uses an existing 'wait-for-netlify' action or polls the deploy API
+        id: preview
+        run: echo "url=https://deploy-preview-${{ github.event.pull_request.number }}--conjure-tech.netlify.app" >> $GITHUB_OUTPUT
+      - name: Run journey tests
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.CLAUDE_REVIEWER_PAT }}
+          PREVIEW_URL: ${{ steps.preview.outputs.url }}
+        run: |
+          npx -y @anthropic-ai/claude-code \
+            --headless \
+            --mcp chrome \
+            --prompt-file .github/prompts/journey-test.md \
+            --max-cost-usd 3.00 \
+            --pr ${{ github.event.pull_request.number }}
+EOF</pre>
+
+  <h4>10.5 &mdash; Uninstall the old <code>claude-ai-review</code></h4>
+  <p><span class="pill pill-ui">UI</span> Two weeks after 10.1&ndash;10.4 are running cleanly, remove the old app at <span class="url"><a href="https://github.com/organizations/conjurehq/settings/installations">https://github.com/organizations/conjurehq/settings/installations</a></span>.</p>
+
+  <div class="verify"><strong>Verify Phase 10:</strong> open a draft PR, then mark it ready &mdash; CodeRabbit posts inline comments within 5 min; <code>claude-deep-review</code> posts one summary comment within 10 min; if you touched <code>apps/web/</code>, <code>journey-test</code> kicks off and posts a comment with findings + screenshots.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p11">
+  <header><h2>Phase 11 &mdash; Docs protection (sanity + drift)</h2><span class="meta">~45 min</span></header>
+
+  <h4>11.1 &mdash; <code>docs-sanity.yml</code></h4>
+  <pre>cat > .github/workflows/docs-sanity.yml <<'EOF'
+name: docs-sanity
+on:
+  pull_request:
+    paths: ['docs/**']
+permissions:
+  pull-requests: write
+  contents: read
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Compute deletion stats
+        id: stats
+        run: |
+          git diff --numstat origin/${{ github.base_ref }}...HEAD -- docs/ \
+            | awk '{added+=$1; deleted+=$2} END {print "deleted="deleted; print "files="NR}' >> $GITHUB_OUTPUT
+      - name: Run Haiku sanity check
+        if: steps.stats.outputs.deleted > 200 || steps.stats.outputs.files > 5
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # call Claude Haiku via the API with the diff + PR title
+          # output YES/NO + reason; exit 1 on NO
+          ./scripts/docs-sanity.sh
+EOF</pre>
+  <p>Add <code>docs-sanity</code> to the required-status-checks list <em>after</em> it&rsquo;s been advisory for two weeks:</p>
+  <pre># in /tmp/ruleset.json, add "docs-sanity" to required_status_checks; re-PUT the ruleset
+gh api -X PUT repos/conjurehq/monorepo/rulesets/$RULESET_ID --input /tmp/ruleset.json</pre>
+
+  <h4>11.2 &mdash; <code>docs-drift.yml</code></h4>
+  <p>Same shape, dispatcher + subagents. Starts advisory; never required.</p>
+  <p>Full design in <code>docs/agents/docs-protection.md</code>.</p>
+
+  <div class="verify"><strong>Verify Phase 11:</strong> open a PR that <code>rm -rf docs/architecture/</code> &rarr; <code>docs-sanity</code> flags with a reason. Revert. Open a PR that changes <code>prod/conjure_tech/apps/web/Button.tsx</code> while leaving <code>docs/architecture/conjure_tech.md</code> unchanged &rarr; <code>docs-drift</code> comment points at the relevant paragraph.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p12">
+  <header><h2>Phase 12 &mdash; Carve <code>analytics</code> out of <code>conjure_tech</code></h2><span class="meta">~half a day</span></header>
+
+  <p>This is a refactor, not a config change. The mechanical part is straightforward; the design questions are where you spend time.</p>
+
+  <h4>12.1 &mdash; Identify the analytics boundary</h4>
+  <p>From <code>prod/conjure_tech/</code>, list every file that ships analytics: tracking scripts, dashboards, ETL, the analytics API endpoints. Write them into <code>_research/analytics-carve-out.md</code>. Aim for an explicit boundary list before moving anything.</p>
+
+  <h4>12.2 &mdash; Move with history</h4>
+  <p>Use <code>git filter-repo</code> on a temporary branch to relocate files while preserving blame. Two approaches:</p>
+  <ul>
+    <li><strong>Move-only refactor (simpler):</strong> use plain <code>git mv</code> in a PR. Loses some blame across the move (workaround: <code>git log --follow</code>).</li>
+    <li><strong>History-preserving (cleaner):</strong> <code>git filter-repo --path-rename prod/conjure_tech/analytics-bits/:prod/analytics/</code> on a side branch, then merge.</li>
+  </ul>
+  <p>For this PR, prefer the move-only refactor. The complete-history version risks merge conflicts that aren&rsquo;t worth the gain at conjure&rsquo;s size.</p>
+
+  <h4>12.3 &mdash; Wire CI</h4>
+  <p>Update <code>.github/workflows/prod-ci.yml</code> matrix to include <code>analytics</code>. Update <code>.github/CODEOWNERS</code> to list <code>prod/analytics/** @ronaldluc</code>. Update <code>.github/dependabot.yml</code> to add the analytics package roots.</p>
+
+  <h4>12.4 &mdash; Write <code>docs/architecture/analytics.md</code></h4>
+  <p>Now that it&rsquo;s a real product, the doc gets fleshed out.</p>
+
+  <div class="verify"><strong>Verify Phase 12:</strong> a PR touching <code>prod/analytics/&hellip;</code> triggers <code>prod-ci</code>&rsquo;s analytics lane independent of the conjure_tech lane. The CODEOWNERS rule fires only on analytics changes.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p13">
+  <header><h2>Phase 13 &mdash; Per-product <code>make test</code> + root dispatcher</h2><span class="meta">~2 hours</span></header>
+
+  <p>The root <code>Makefile</code> is a dispatcher; each product owns its real targets.</p>
+
+  <pre>cat > Makefile <<'EOF'
+# Root dispatcher. Args:
+#   PATHS=<space-separated touched paths>   (CI passes this)
+#   PRODUCT=<name>                          (manual override)
+
+PATHS ?=
+PRODUCT ?=
+
+.PHONY: test lint typecheck
+
+test:
+ifdef PRODUCT
+	$(MAKE) -C prod/$(PRODUCT) test
+else
+	@for p in $$(./scripts/products-from-paths.sh $(PATHS)); do \
+	  $(MAKE) -C prod/$$p test; \
+	done
+endif
+
+lint:
+ifdef PRODUCT
+	$(MAKE) -C prod/$(PRODUCT) lint
+else
+	@for p in $$(./scripts/products-from-paths.sh $(PATHS)); do \
+	  $(MAKE) -C prod/$$p lint; \
+	done
+endif
+
+typecheck: ## same shape as test/lint
+EOF</pre>
+
+  <p>Each <code>prod/&lt;product&gt;/Makefile</code> defines real targets. For <code>conjure_tech</code>, port the existing <code>Makefile</code> targets from the old conjure repo.</p>
+
+  <p><code>scripts/products-from-paths.sh</code> reads a list of paths, prints the unique <code>prod/&lt;X&gt;</code> roots that contain them. Trivial bash.</p>
+
+  <p>Wire CI: in <code>.github/workflows/prod-ci.yml</code>, the lint job runs <code>make test PATHS="${{ steps.changes.outputs.touched_files }}"</code>.</p>
+
+  <div class="verify"><strong>Verify Phase 13:</strong> from <code>prod/conjure_tech/</code>, <code>make test</code> runs only its tests; from repo root, <code>make test PATHS="prod/analytics/foo.py prod/conjure_tech/apps/web/Bar.tsx"</code> runs both products&rsquo; test targets and only those.</div>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p14">
+  <header><h2>Phase 14 &mdash; End-to-end validation against US-1..US-30</h2><span class="meta">~half a day</span></header>
+
+  <p>Replicate the validation matrix from <code>results.html</code> against the live monorepo. For each story, run the linked action and confirm the expected outcome.</p>
+
+  <table>
+    <thead><tr><th>Story</th><th>Action</th><th>Expect</th></tr></thead>
+    <tbody>
+      <tr><td>US-1</td><td><code>git push --force-with-lease origin main</code> from a clean clone</td><td>rejected: "Cannot force-push"</td></tr>
+      <tr><td>US-2</td><td>direct <code>git push origin main</code></td><td>rejected: "Changes must be made through a pull request"</td></tr>
+      <tr><td>US-4</td><td>PR touching <code>prod/conjure_tech/&hellip;</code> from a 2nd account (or use bot to push)</td><td>review-required banner</td></tr>
+      <tr><td>US-5</td><td>PR touching only <code>spikes/&hellip;</code></td><td>required checks green, merge button enabled, no review needed</td></tr>
+      <tr><td>US-6</td><td>PR touching <code>prod/conjure_tech/</code> + <code>spikes/</code></td><td>prod review required</td></tr>
+      <tr><td>US-7</td><td>Inspect spike-only PR&rsquo;s ci-gate</td><td>SUCCESS via skip</td></tr>
+      <tr><td>US-8</td><td>You (sole codeowner) merge a prod PR after CI passes</td><td>merge button works without approval</td></tr>
+      <tr><td>US-9..US-14</td><td>local pre-commit + LFS round-trip on a 5 MB .mp4</td><td>per the matrix in results.html</td></tr>
+      <tr><td>US-17, US-18</td><td>delete an AGENTS.md symlink and try to commit</td><td>hook fails</td></tr>
+      <tr><td>US-19</td><td>after merging the scaffold, wait for Dependabot</td><td>PRs for prod/* npm/pip; none for spikes/</td></tr>
+      <tr><td>US-20</td><td>submit an approving review from the conjure-reviewer bot account&rsquo;s PAT &mdash; but make it type=Bot first by switching to <code>github-actions[bot]</code> via a workflow</td><td>ai-cannot-approve fails; merge blocked</td></tr>
+      <tr><td>US-21</td><td>PR that <code>rm -rf docs/architecture/</code></td><td>docs-sanity flags with reason</td></tr>
+      <tr><td>US-22</td><td>PR that edits <code>apps/web/Foo.tsx</code> while leaving the matching doc untouched</td><td>docs-drift comment lists drift</td></tr>
+      <tr><td>US-23, US-24</td><td>read object via manifest; attempt to delete with CI token</td><td>read works; delete 403</td></tr>
+      <tr><td>US-25</td><td>reproduce <code>_research/git-folder-collision.sh</code> on the live repo</td><td>untracked files survive pull</td></tr>
+      <tr><td>US-26, US-27</td><td><code>cd prod/conjure_tech && make test</code> &middot; <code>make test PATHS="prod/conjure_tech/&hellip; prod/analytics/&hellip;"</code> from root</td><td>only relevant tests run</td></tr>
+      <tr><td>US-28, US-29, US-30</td><td>observe CodeRabbit, claude-deep-review, journey-test on a fresh PR</td><td>comments appear within expected SLA</td></tr>
+    </tbody>
+  </table>
+
+  <p>Capture verdicts in <code>docs/agents/migration-validation.md</code> with PR numbers and screenshots for anything non-obvious.</p>
+</div>
+
+<!-- ====================================================== -->
+<div class="phase" id="p15">
+  <header><h2>Phase 15 &mdash; Cutover and deprecate the old layout</h2><span class="meta">~1 hour + waiting period</span></header>
+
+  <h4>15.1 &mdash; Update DNS / deploys</h4>
+  <p>Production deploy pipelines (Netlify, Cloudflare Workers, GHCR, Railway) currently point at <code>conjurehq/conjure</code>. Update each to point at <code>conjurehq/monorepo</code> with the right subdirectory:</p>
+  <ul>
+    <li>Netlify (frontend): site settings &rarr; build: <code>cd prod/conjure_tech/apps/web && pnpm build</code>. Direct: <span class="url"><a href="https://app.netlify.com/sites">https://app.netlify.com/sites</a></span></li>
+    <li>Cloudflare Workers (API): <code>wrangler.toml</code> path updated; Wrangler GitHub Action pointed at new repo. Direct: <span class="url"><a href="https://dash.cloudflare.com">https://dash.cloudflare.com</a></span> &rarr; Workers</li>
+    <li>GHCR images: build action in <code>monorepo</code> publishes <code>ghcr.io/conjurehq/conjure/api</code> (keep the image name for compatibility).</li>
+    <li>Railway: <span class="url"><a href="https://railway.app/dashboard">https://railway.app/dashboard</a></span> &rarr; service &rarr; settings &rarr; repo: <code>conjurehq/monorepo</code>, root directory: <code>prod/conjure_tech/&hellip;</code></li>
+  </ul>
+
+  <h4>15.2 &mdash; Run one prod deploy from the new repo</h4>
+  <p>Cut a release PR. Merge it. Watch all deploy pipelines go green. Smoke-test conjure.tech in production.</p>
+
+  <h4>15.3 &mdash; Freeze <code>conjurehq/conjure</code></h4>
+  <p><span class="pill pill-ui">UI</span> Once new repo has been hot for 48 hours with no incidents:</p>
+  <ul>
+    <li>Add a <code>README.md</code> banner to <code>conjurehq/conjure</code>: <em>"Moved to <a>conjurehq/monorepo &rarr; prod/conjure_tech/</a>. This repo is read-only as of 2026-MM-DD."</em></li>
+    <li><span class="url"><a href="https://github.com/conjurehq/conjure/settings">https://github.com/conjurehq/conjure/settings</a></span> &rarr; bottom of the page &rarr; <strong>Archive this repository</strong>.</li>
+    <li>Update internal docs / runbooks pointing at the old repo URL.</li>
+  </ul>
+
+  <h4>15.4 &mdash; Post-mortem doc</h4>
+  <p>Write <code>docs/agents/migration-postmortem.md</code> with: time taken per phase vs estimate, surprises, things to do differently next time. Feed back into the migration plan in this HTML.</p>
+
+  <div class="verify"><strong>Verify Phase 15:</strong> prod deploys from the new repo for 48 hours without rollback. <code>conjurehq/conjure</code> shows the <em>Archived</em> banner.</div>
+</div>
+
+<!-- ====================================================== -->
+<h2>Failure modes and rollback</h2>
+<table>
+  <thead><tr><th>If &hellip;</th><th>Then &hellip;</th></tr></thead>
+  <tbody>
+    <tr><td>filter-repo produces a broken history</td><td>throw away <code>conjure-import/</code> and start Phase 2 again. The new repo on GitHub stays empty until you push. Idempotent.</td></tr>
+    <tr><td>Ruleset blocks every PR (required checks misnamed)</td><td>delete the ruleset (<code>gh api -X DELETE /repos/&hellip;/rulesets/&lt;id&gt;</code>); fix the contexts; re-create. You retain admin so nothing locks you out.</td></tr>
+    <tr><td>R2 token has Delete permission by mistake</td><td>revoke at the Cloudflare dashboard; re-mint with correct scope; update repo secrets.</td></tr>
+    <tr><td>CodeRabbit floods PRs with noise</td><td>tune <code>.coderabbit.yaml</code> path filters; if unsalvageable, uninstall the App and stick with Claude-deep-review only.</td></tr>
+    <tr><td>claude-deep-review costs spike</td><td>lower <code>--max-cost-usd</code> in the workflow; set a daily org-wide Anthropic spending cap; disable on non-prod PRs.</td></tr>
+    <tr><td>Production deploy regresses after Phase 15.2</td><td>roll back the deploy via Netlify/Wrangler/Railway; the new repo stays as-is, old conjure repo isn&rsquo;t archived yet so it can resume serving.</td></tr>
+  </tbody>
+</table>
+
+<!-- ====================================================== -->
+<h2>Open questions that need human decisions before starting</h2>
+<ol>
+  <li><strong>Do we want a second human reviewer on <code>prod/</code> from day one</strong>, or accept solo-codeowner no-op for the first weeks? If second reviewer is added, every prod PR needs their approval &mdash; slower but safer.</li>
+  <li><strong>Is <code>conjurehq/monorepo</code> the right name</strong>, or should we name it <code>conjurehq/conjure-v2</code> / <code>conjurehq/platform</code>? Renaming later is cheap but breaks bookmarks.</li>
+  <li><strong>Migrate open PRs and issues from <code>conjurehq/conjure</code>?</strong> GitHub has no native transfer; need a script (<code>gh issue list | xargs gh issue create</code>). Decide whether the cost is worth it for outstanding work.</li>
+  <li><strong>Repository visibility</strong>: stay private (default) or open-source after migration? If open-sourcing, LFS bandwidth on forks becomes a real cost &mdash; switch to R2 for large assets first.</li>
+</ol>
+
+<footer>
+Drafted 2026-05-15 from the validation in <a href="results.html">results.html</a>, the design notes in <code>docs/agents/</code>, and the runner / LFS findings in <a href="executive-summary.html">executive-summary.html</a>. Companion: <a href="first-principles.html">first-principles.html</a> &mdash; the mental model this plan operationalises.
+</footer>
+
+</main>
+</body>
+</html>
